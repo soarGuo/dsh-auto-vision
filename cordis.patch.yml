@@ -1,0 +1,6 @@
+# dsh-auto-vision bundle patch: inserts its server plugin row into the web
+# profile roster. The bundle is the official dsh plugin shape — install it with
+# `dsh plugin --profile web add dsh-auto-vision`.
+- insert:
+    - id: auto-vision
+      name: dsh-auto-vision

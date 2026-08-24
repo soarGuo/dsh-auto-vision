@@ -1,0 +1,202 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { StreamChunk } from '@deepseek-ai/dsh-llm'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import AgentRegistry, { agentEvents, Inbox, type Agent } from '@deepseek-ai/dsh-agent'
+import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
+import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
+import * as autoVision from '../src/index.ts'
+
+const SIGNAL = new AbortController().signal
+
+const REF: ImageAttachmentRef = {
+  attachmentId: 'img-1',
+  mediaType: 'image/png',
+  width: 100,
+  height: 100,
+  bytes: 1024,
+} as never
+
+function textChunks(text: string): StreamChunk[] {
+  return [
+    { type: 'block-start', index: 0, blockType: 'text' },
+    { type: 'text-delta', index: 0, text },
+    { type: 'block-end', index: 0, block: { type: 'text', text } },
+    { type: 'finish', reason: { kind: 'stop' } },
+  ]
+}
+
+function imageProposal(): ReturnType<typeof createUserMessage> {
+  return createUserMessage({
+    content: [
+      { type: 'text', text: '这个报错怎么修?' },
+      { type: 'image', attachment: REF },
+    ],
+    source: { kind: 'user' },
+  })
+}
+
+function textProposal(): ReturnType<typeof createUserMessage> {
+  return createUserMessage({
+    content: [{ type: 'text', text: '普通问题' }],
+    source: { kind: 'user' },
+  })
+}
+
+interface Fixture {
+  ctx: Context
+  agent: Agent
+  llm: {
+    resolveModelInfo: ReturnType<typeof vi.fn>
+    stream: ReturnType<typeof vi.fn>
+  }
+  fire: (proposal: ReturnType<typeof createUserMessage>) => Promise<PreStepDecision>
+  assemble: (provider: string, model: string) => Promise<PromptAssembly>
+}
+
+async function mount(options: { agentModel?: string; pluginConfig?: Record<string, unknown> } = {}): Promise<Fixture> {
+  const ctx = new Context()
+  await ctx.plugin(AgentRegistry)
+  const llm = {
+    resolveModelInfo: vi.fn(async (_provider: string, model: string) => ({
+      provider: 'deepseek',
+      id: model,
+      name: model,
+      inputModalities: ['text'],
+    })),
+    stream: vi.fn(async function* () {
+      yield* textChunks('图1:这是一张错误截图')
+    }),
+  }
+  ctx.provide('llm', llm as never)
+  await ctx.plugin(autoVision, options.pluginConfig ?? {})
+
+  const session = Session.create(SessionId('test-session'))
+  const agent: Agent = {
+    id: SessionId('agent-1'),
+    options: { provider: 'deepseek', model: options.agentModel ?? 'deepseek-v4-pro' },
+    session,
+    inbox: new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} }),
+    status: 'running',
+    ctx: new Context(),
+    send: () => {},
+    followup: () => {},
+    steer: () => {},
+    inject: () => { throw new Error('unused') },
+    cancel() {},
+    runMaintenance: task => task(new AbortController().signal),
+    whenIdle: () => Promise.resolve(),
+  }
+  const fire = async (proposal: ReturnType<typeof createUserMessage>) => agentEvents(ctx, agent).waterfall(
+    'agent/pre-step',
+    { messages: [proposal], turn: 1, step: 1, signal: SIGNAL },
+    () => Promise.resolve<PreStepDecision>({ kind: 'enter', messages: [proposal] }),
+  )
+  const assemble = (provider: string, model: string): Promise<PromptAssembly> => {
+    const assembly: PromptAssembly = {
+      sections: [],
+      contexts: [],
+      tools: [],
+      variables: { provider, model },
+    }
+    return ctx.waterfall(
+      'system-prompt/assemble',
+      assembly,
+      { agent } as never,
+      () => Promise.resolve(assembly),
+    )
+  }
+  return { ctx, agent, llm, fire, assemble }
+}
+
+beforeEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('auto-vision agent/pre-step(白名单机制)', () => {
+  it('assemble 快照为白名单外模型(pro):原消息原样 + 独立识别描述', async () => {
+    const { llm, fire, assemble } = await mount()
+    await assemble('deepseek', 'deepseek-v4-pro')
+    const decision = await fire(imageProposal())
+    expect(decision.kind).toBe('enter')
+    if (decision.kind !== 'enter') return
+    // 拆成两条:原消息(图片移除、文字原样)+ 识别描述消息。
+    expect(decision.messages).toHaveLength(2)
+    const original = decision.messages[0]
+    expect(original.content.some(block => block.type === 'image')).toBe(false)
+    expect(original.content).toEqual([{ type: 'text', text: '这个报错怎么修?' }])
+    expect(original.source).toEqual({ kind: 'user' })
+    const description = decision.messages[1]
+    const text = description.content.filter(block => block.type === 'text').map(block => block.text).join('\n')
+    expect(text).toContain('[截图识别 ')
+    expect(text).toContain('图1:这是一张错误截图')
+    expect(description.source).toEqual({
+      kind: 'plugin',
+      plugin: 'auto-vision',
+      form: 'notice',
+      summary: '识别了 1 张图片',
+    })
+    expect(llm.stream).toHaveBeenCalledTimes(1)
+  })
+
+  it('assemble 快照为白名单内模型(vision-exp):不干预', async () => {
+    const { llm, fire, assemble } = await mount()
+    await assemble('deepseek', 'deepseek-v4-flash-vision-exp')
+    const decision = await fire(imageProposal())
+    if (decision.kind !== 'enter') throw new Error('expected enter')
+    expect(decision.messages[0].content.some(block => block.type === 'image')).toBe(true)
+    expect(llm.stream).not.toHaveBeenCalled()
+  })
+
+  it('无 assemble 快照:回退 agent 创建选项判断', async () => {
+    const { llm, fire } = await mount({ agentModel: 'deepseek-v4-flash-vision-exp' })
+    const decision = await fire(imageProposal())
+    if (decision.kind !== 'enter') throw new Error('expected enter')
+    // agent.options 是 vision-exp(白名单内),不干预。
+    expect(decision.messages[0].content.some(block => block.type === 'image')).toBe(true)
+    expect(llm.stream).not.toHaveBeenCalled()
+  })
+
+  it('自定义白名单生效:白名单外替换,白名单内不干预', async () => {
+    const { llm, fire, assemble } = await mount({
+      pluginConfig: {
+        nativeVision: [{ provider: 'deepseek', model: 'my-vision-model' }],
+      },
+    })
+    // 官方 flash 不在自定义白名单 → 替换。
+    await assemble('deepseek', 'deepseek-v4-flash')
+    const first = await fire(imageProposal())
+    if (first.kind !== 'enter') throw new Error('expected enter')
+    expect(first.messages).toHaveLength(2)
+    expect(first.messages[0].content.some(block => block.type === 'image')).toBe(false)
+    expect(llm.stream).toHaveBeenCalledTimes(1)
+
+    // 自定义模型在白名单 → 不干预。
+    await assemble('deepseek', 'my-vision-model')
+    const second = await fire(imageProposal())
+    if (second.kind !== 'enter') throw new Error('expected enter')
+    expect(second.messages[0].content.some(block => block.type === 'image')).toBe(true)
+    expect(llm.stream).toHaveBeenCalledTimes(1)
+  })
+
+  it('消息无图:不调用识图', async () => {
+    const { llm, fire, assemble } = await mount()
+    await assemble('deepseek', 'deepseek-v4-pro')
+    const decision = await fire(textProposal())
+    if (decision.kind !== 'enter') throw new Error('expected enter')
+    expect(llm.stream).not.toHaveBeenCalled()
+  })
+
+  it('默认配置使用官方视觉模型', async () => {
+    const { llm, fire, assemble } = await mount()
+    await assemble('deepseek', 'deepseek-v4-pro')
+    await fire(imageProposal())
+    const options = llm.stream.mock.calls[0][0]
+    expect(options.provider).toBe('deepseek-official')
+    expect(options.model).toBe('deepseek-v4-flash-vision-exp')
+    // 识别用的消息源是插件,避免与用户消息混淆。
+    expect(options.messages[0].source).toEqual({ kind: 'plugin', plugin: 'auto-vision' })
+  })
+})

@@ -33,7 +33,7 @@ Prebuilt `lib/` is committed to the repository, so installs need **no build step
 From GitHub:
 
 ```sh
-dsh plugin --profile web add github:<you>/dsh-auto-vision
+dsh plugin --profile web add github:soarGuo/dsh-auto-vision
 ```
 
 From a tarball:
@@ -47,10 +47,11 @@ Then restart DSH.
 
 ## Configuration
 
-In `~/.dsh/settings.yaml`:
+**Zero manual setup for model declarations.** By default (`autoDeclareInput: true`) the plugin scans the `llm-pi-ai` and `llm-deepseek` settings sections on startup (and whenever settings/adapters change) and automatically adds `image` input declarations to every configured model — the step the GUI admission check needs to let images through. Native vision models get the declaration too (they need it to receive images at all). Idempotent; already-declared models are untouched.
+
+The plugin's own section (all fields optional; these are the defaults):
 
 ```yaml
-# Plugin section (all fields optional; these are the defaults)
 auto-vision:
   visionProvider: deepseek-official              # recognition route
   visionModel: deepseek-v4-flash-vision-exp      # recognition model
@@ -59,9 +60,14 @@ auto-vision:
       { provider: deepseek-official, model: deepseek-v4-flash-vision-exp },
       { provider: deepseek, model: deepseek-v4-flash-vision-exp }
     ]
+  autoDeclareInput: true                         # auto-add image declarations (set false to manage manually)
+```
 
-# Declare image input on every bridged model so the GUI admits images.
-# Example for an OpenAI-compatible gateway route:
+Set `autoDeclareInput: false` if you prefer to declare `input: [text, image]` yourself (then follow the manual steps below). Settings hot-reload — no restart needed for config changes.
+
+### Manual declaration (only when autoDeclareInput is false)
+
+```yaml
 llm-pi-ai:
   providers:
     {
@@ -79,7 +85,7 @@ llm-pi-ai:
     }
 ```
 
-Remember to add the bridged models to `nativeVision` **only if** they really see images; otherwise the plugin bridges them (which is the point). Settings hot-reload — no restart needed for config changes.
+Remember to add the bridged models to `nativeVision` **only if** they really see images; otherwise the plugin bridges them (which is the point).
 
 ## Caveats
 

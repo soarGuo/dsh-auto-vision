@@ -23,6 +23,7 @@ import type {} from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from 'schemastery'
+import { declareImageInputs } from './declare.ts'
 import { describeImages, hasImage, PLUGIN_NAME } from './vision.ts'
 
 /** 稳定 cordis 插件名(与 cordis.patch.yml 的 insert id 一致)。 */
@@ -61,6 +62,12 @@ export interface Config {
    * 白名单外的模型带图时替换为识别文本。默认两个 vision-exp。
    */
   nativeVision?: NativeVisionModel[]
+  /**
+   * 自动配置:启动时(及 settings/适配器变化时)自动给 settings 里已配置
+   * 的模型补 `image` 输入声明,让 GUI 放行带图消息、免去手动配置。
+   * 默认 true;设为 false 关闭(此时需按 README 手动声明)。
+   */
+  autoDeclareInput?: boolean
 }
 
 /** Schemastery 校验(同时是 settings 段的 schema)。 */
@@ -71,6 +78,7 @@ export const Config: z<Config> = z.object({
     provider: z.string(),
     model: z.string(),
   })).default(DEFAULT_NATIVE_VISION),
+  autoDeclareInput: z.boolean().default(true),
 })
 
 /**
@@ -146,4 +154,34 @@ export function apply(ctx: Context, config: Config): void {
     }))
     return { kind: 'enter', messages: expanded.flat() }
   }, { prepend: true })
+
+  // ---- 自动配置:给已配置模型补 image 输入声明 ----
+  // 触发时机:插件加载后(延迟,等 llm 插件的 settings 段注册完成)、
+  // 适配器变化、以及任何 settings 更新(用户在模型页新增模型后也能补齐)。
+  let syncTimer: ReturnType<typeof setTimeout> | undefined
+  const scheduleDeclarations = (): void => {
+    if (syncTimer !== undefined) clearTimeout(syncTimer)
+    syncTimer = setTimeout(() => {
+      syncTimer = undefined
+      const settings = ctx.get('settings')
+      if (settings === undefined) return
+      const cfg = current() ?? {}
+      if (cfg.autoDeclareInput === false) return
+      void declareImageInputs(settings).catch((error: unknown) => {
+        ctx.logger.warn(`auto-vision: failed to auto-declare image input: ${String(error)}`)
+      })
+    }, 1000)
+  }
+  scheduleDeclarations()
+  ctx.on('llm/adapters-updated', () => {
+    scheduleDeclarations()
+  })
+  ctx.on('settings/updated', () => {
+    scheduleDeclarations()
+  })
+
+  // 清理残留定时器。
+  ctx.effect(() => () => {
+    if (syncTimer !== undefined) clearTimeout(syncTimer)
+  })
 }

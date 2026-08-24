@@ -6,7 +6,7 @@ DSH 插件:当前会话模型**不在"原生视觉白名单"里**时,自动用�
 
 ## 工作原理
 
-1. **GUI 放行**(settings 配置):把需要桥接的模型(如 `deepseek-v4-pro` / `deepseek-v4-flash`)在 settings.yaml 里声明 `input: [text, image]`。图片准入检查只相信模型声明,声明含 image 即放行,带图消息得以进入 inbox。
+1. **GUI 放行**(自动配置):插件默认(`autoDeclareInput: true`)在启动时与 settings/适配器变化时,自动给 settings 里已配置的模型补 `input: [text, image]` 声明——图片准入检查只相信模型声明,声明含 image 即放行,带图消息得以进入 inbox。原生视觉模型同样补声明(它们也需要声明才能收到图)。
 2. **准确模型快照**(插件):监听 `system-prompt/assemble`(pre-step 前、同一步发生),从 `assembly.variables` 读取 GUI 此刻选择的准确 provider/model(由 DSH 的 model-selection 机制写入)。
 3. **拆分注入**(插件):`agent/pre-step` 时,白名单外的模型 → 原消息仅移除图片块(文字一字不动),识别描述作为**独立的 notice 上下文消息**追加其后(GUI 渲染为折叠行:摘要 + 展开看全文)。两条消息都由 agent loop 原样写入会话历史,**识别结果天然持久化**,后续多轮都能引用同一条图片记忆。
 4. **白名单内不干预**:`nativeVision` 里的模型(默认两个 vision-exp)带图时图片原样交给模型。
@@ -26,7 +26,7 @@ DSH 插件:当前会话模型**不在"原生视觉白名单"里**时,自动用�
 
 ```sh
 # GitHub 安装
-dsh plugin --profile web add github:<你>/dsh-auto-vision
+dsh plugin --profile web add github:soarGuo/dsh-auto-vision
 
 # 或 tarball 安装(在仓库目录里先 pnpm pack)
 dsh plugin --profile web add ./dsh-auto-vision-0.1.0.tgz
@@ -36,9 +36,9 @@ dsh plugin --profile web add ./dsh-auto-vision-0.1.0.tgz
 
 ## 配置
 
-`~/.dsh/settings.yaml` 需要两处配合:
+**模型声明零手动配置。** 默认(`autoDeclareInput: true`)插件会自动扫描 `llm-pi-ai` / `llm-deepseek` 段,给所有已配置模型补 `image` 输入声明(幂等,已声明的不动),这是 GUI 准入放行所需的那一步。安装者无需手动改任何东西。
 
-**A. 插件段** `auto-vision`(均可省略,以下为默认值):
+插件自身配置(均可省略,以下为默认值):
 
 ```yaml
 auto-vision:
@@ -49,9 +49,20 @@ auto-vision:
       { provider: deepseek-official, model: deepseek-v4-flash-vision-exp },
       { provider: deepseek, model: deepseek-v4-flash-vision-exp }
     ]
+  autoDeclareInput: true                       # 自动补 image 声明;false 则手动管理
 ```
 
-**B. 桥接模型的 input 声明**(让 GUI 的准入检查放行带图消息)。以某 OpenAI 兼容网关路由为例:
+settings.yaml 修改即时生效(热重载)。识图路由也可指向任一网关的视觉模型:
+
+```yaml
+auto-vision:
+  visionProvider: deepseek
+  visionModel: deepseek-v4-flash-vision-exp
+```
+
+### 手动声明(仅当 autoDeclareInput: false)
+
+以某 OpenAI 兼容网关路由为例:
 
 ```yaml
 llm-pi-ai:
@@ -69,14 +80,6 @@ llm-pi-ai:
           apiKeyEnv: MY_API_KEY
         }
     }
-```
-
-settings.yaml 修改即时生效(热重载)。识图路由也可指向任一网关的视觉模型:
-
-```yaml
-auto-vision:
-  visionProvider: deepseek
-  visionModel: deepseek-v4-flash-vision-exp
 ```
 
 ## 注意事项

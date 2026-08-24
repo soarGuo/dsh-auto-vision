@@ -28,8 +28,11 @@ DSH 插件:当前会话模型**不在"原生视觉白名单"里**时,自动用�
 # GitHub 安装
 dsh plugin --profile web add github:soarGuo/dsh-auto-vision
 
+# npm 安装(发布后)
+dsh plugin --profile web add dsh-auto-image
+
 # 或 tarball 安装(在仓库目录里先 pnpm pack)
-dsh plugin --profile web add ./dsh-auto-vision-0.1.0.tgz
+dsh plugin --profile web add ./dsh-auto-image-0.1.0.tgz
 ```
 
 安装后重启 DSH。

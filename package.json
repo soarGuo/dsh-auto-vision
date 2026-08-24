@@ -1,5 +1,5 @@
 {
-  "name": "dsh-auto-vision",
+  "name": "dsh-auto-image",
   "version": "0.1.0",
   "description": "Bridges images into text for DeepSeek Harness: when the session's selected model cannot see images, a configured vision model describes them and the descriptions enter the durable session history as folded context rows — your message stays untouched.",
   "type": "module",
@@ -8,6 +8,10 @@
     ".": "./lib/index.js",
     "./package.json": "./package.json"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/soarGuo/dsh-auto-vision"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -15,6 +19,7 @@
   },
   "scripts": {
     "build": "tsdown",
+    "prepublishOnly": "tsdown",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },

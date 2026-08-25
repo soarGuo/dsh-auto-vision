@@ -17,6 +17,7 @@
 1. **Admission (settings)**: the GUI rejects images for models that do not declare `image` input. Declare `input: [text, image]` on the bridged models in `settings.yaml` — the admission check trusts the model declaration and lets the message in.
 2. **Accurate model snapshot (plugin)**: the plugin listens to `system-prompt/assemble` (fires right before `agent/pre-step`, same step) and reads the provider/model the GUI just selected from `assembly.variables`.
 3. **Rewrite (plugin)**: at `agent/pre-step`, images in messages whose model is not on the `nativeVision` allowlist are removed and replaced by a separate notice-form context message carrying the vision description. The agent loop appends both messages to the session log.
+4. **Group-following recognition route**: the recognition route follows the session model's provider group — images sent in one provider group are described by that group's own vision model (same credentials); groups without a native vision entry fall back to `visionProvider`/`visionModel`.
 
 No DSH source changes required.
 

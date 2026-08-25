@@ -100,17 +100,26 @@ export function apply(ctx: Context, config: Config): void {
     },
   })
 
-  /** 每次识图调用时读取最新配置,settings.yaml 修改即时生效。 */
-  const vision = (): { provider: string; model: string } => {
+  /** 原生视觉白名单(每次判断时读取最新配置)。 */
+  const nativeVision = (): NativeVisionModel[] => (current() ?? {}).nativeVision ?? DEFAULT_NATIVE_VISION
+
+  /**
+   * 解析识图路由:跟随当前会话模型的分组。
+   * 若当前 provider 在白名单里列有原生视觉模型,就用**同分组**的视觉模型
+   * 识图(同分组即同一组凭据,例如 sub2api 分组走 QX key);否则回退到
+   * 配置的默认识图路由。
+   */
+  const resolveVisionRoute = (provider: string | undefined): { provider: string; model: string } => {
+    if (provider !== undefined) {
+      const match = nativeVision().find(entry => entry.provider === provider)
+      if (match !== undefined) return { provider: match.provider, model: match.model }
+    }
     const cfg = current() ?? {}
     return {
       provider: cfg.visionProvider ?? DEFAULT_VISION_PROVIDER,
       model: cfg.visionModel ?? DEFAULT_VISION_MODEL,
     }
   }
-
-  /** 原生视觉白名单(每次判断时读取最新配置)。 */
-  const nativeVision = (): NativeVisionModel[] => (current() ?? {}).nativeVision ?? DEFAULT_NATIVE_VISION
 
   /** 每个 agent 最近一次 assemble 的准确模型;assemble 先于 pre-step、同一步发生。 */
   const assembledModel = new WeakMap<Agent, { provider: string; model: string }>()
@@ -128,11 +137,18 @@ export function apply(ctx: Context, config: Config): void {
     return transformed
   })
 
+  /** 当前模型(assemble 快照优先,agent 创建选项兜底)。 */
+  const currentModel = (agent: Agent): { provider?: string; model?: string } => {
+    const snapshot = assembledModel.get(agent)
+    return {
+      provider: snapshot?.provider ?? agent.options.provider,
+      model: snapshot?.model ?? agent.options.model,
+    }
+  }
+
   /** 当前模型是否原生支持图片:assemble 快照优先,agent 创建选项兜底。 */
   const isNativeVision = (agent: Agent): boolean => {
-    const snapshot = assembledModel.get(agent)
-    const provider = snapshot?.provider ?? agent.options.provider
-    const model = snapshot?.model ?? agent.options.model
+    const { provider, model } = currentModel(agent)
     if (provider === undefined || model === undefined) return false
     return nativeVision().some(entry => entry.provider === provider && entry.model === model)
   }
@@ -146,10 +162,12 @@ export function apply(ctx: Context, config: Config): void {
     if (!decision.messages.some(message => hasImage(message))) return decision
     // 原生视觉模型(如 vision-exp)不干预,图片原样交给模型。
     if (isNativeVision(agent)) return decision
+    // 识图路由跟随当前分组:用当前 provider 分组里的视觉模型识图。
+    const route = resolveVisionRoute(currentModel(agent).provider)
     // 带图消息拆成两条:原消息(图片移除、文字原样)+ 独立识别描述消息。
     const expanded = await Promise.all(decision.messages.map(async message => {
       if (!hasImage(message)) return [message]
-      const { rewritten, description } = await describeImages(ctx, vision(), message, signal)
+      const { rewritten, description } = await describeImages(ctx, route, message, signal)
       return description === null ? [rewritten] : [rewritten, description]
     }))
     return { kind: 'enter', messages: expanded.flat() }

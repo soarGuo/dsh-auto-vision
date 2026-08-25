@@ -189,9 +189,26 @@ describe('auto-vision agent/pre-step(白名单机制)', () => {
     expect(llm.stream).not.toHaveBeenCalled()
   })
 
-  it('默认配置使用官方视觉模型', async () => {
+  it('识图路由跟随当前分组:sub2api 分组用其视觉模型,官方分组用官方视觉模型', async () => {
     const { llm, fire, assemble } = await mount()
+    // 当前分组 sub2api(deepseek)→ 用同分组的 vision-exp 识图。
     await assemble('deepseek', 'deepseek-v4-pro')
+    await fire(imageProposal())
+    const first = llm.stream.mock.calls[0][0]
+    expect(first.provider).toBe('deepseek')
+    expect(first.model).toBe('deepseek-v4-flash-vision-exp')
+
+    // 切到官方分组 → 用官方的 vision-exp 识图。
+    await assemble('deepseek-official', 'deepseek-v4-pro')
+    await fire(imageProposal())
+    const second = llm.stream.mock.calls[1][0]
+    expect(second.provider).toBe('deepseek-official')
+    expect(second.model).toBe('deepseek-v4-flash-vision-exp')
+  })
+
+  it('分组无白名单项时回退默认识图路由', async () => {
+    const { llm, fire, assemble } = await mount()
+    await assemble('some-other-provider', 'some-model')
     await fire(imageProposal())
     const options = llm.stream.mock.calls[0][0]
     expect(options.provider).toBe('deepseek-official')

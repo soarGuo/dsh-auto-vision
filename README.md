@@ -9,7 +9,7 @@
 1. **GUI 放行**(自动配置):插件默认(`autoDeclareInput: true`)在启动时与 settings/适配器变化时,自动给 settings 里已配置的模型补 `input: [text, image]` 声明——图片准入检查只相信模型声明,声明含 image 即放行,带图消息得以进入 inbox。原生视觉模型同样补声明(它们也需要声明才能收到图)。
 2. **准确模型快照**(插件):监听 `system-prompt/assemble`(pre-step 前、同一步发生),从 `assembly.variables` 读取 GUI 此刻选择的准确 provider/model(由 DSH 的 model-selection 机制写入)。
 3. **拆分注入**(插件):`agent/pre-step` 时,白名单外的模型 → 原消息仅移除图片块(文字一字不动),识别描述作为**独立的 notice 上下文消息**追加其后(GUI 渲染为折叠行:摘要 + 展开看全文)。两条消息都由 agent loop 原样写入会话历史,**识别结果天然持久化**,后续多轮都能引用同一条图片记忆。
-4. **白名单内不干预**:`nativeVision` 里的模型(默认两个 vision-exp)带图时图片原样交给模型。
+4. **识图跟随分组**:识图路由自动跟随当前会话模型的分组——在 sub2api 分组里发图,就用 sub2api 分组里的视觉模型识图(走该分组的 key);切到官方分组,就用官方视觉模型(走官方 key)。分组在白名单里没有视觉模型时,回退到 `visionProvider`/`visionModel` 默认路由。
 
 ## 行为
 
@@ -47,7 +47,7 @@ dsh plugin --profile web add ./dsh-auto-image-0.1.0.tgz
 auto-vision:
   visionProvider: deepseek-official            # 默认识图路由
   visionModel: deepseek-v4-flash-vision-exp    # 默认视觉模型
-  nativeVision:                                # 原生视觉白名单:带图时不干预
+  nativeVision:                                # 原生视觉白名单:带图时不干预,也是识图路由的候选
     [
       { provider: deepseek-official, model: deepseek-v4-flash-vision-exp },
       { provider: deepseek, model: deepseek-v4-flash-vision-exp }

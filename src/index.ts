@@ -38,6 +38,8 @@ export const AUTO_VISION_NAMESPACE = settingsNamespace('auto-vision')
 /** 默认识图路由:官方 DeepSeek 的视觉实验模型。 */
 export const DEFAULT_VISION_PROVIDER = 'deepseek-official'
 export const DEFAULT_VISION_MODEL = 'deepseek-v4-flash-vision-exp'
+/** 默认识图思考强度。 */
+export const DEFAULT_VISION_REASONING_EFFORT = 'high'
 
 /** 一条"原生视觉"模型标识。 */
 export interface NativeVisionModel {
@@ -68,6 +70,11 @@ export interface Config {
    * 默认 true;设为 false 关闭(此时需按 README 手动声明)。
    */
   autoDeclareInput?: boolean
+  /**
+   * 识图调用使用的思考强度,默认 `high`。只作用于识图这一次调用,
+   * 不影响用户会话模型的思考强度。
+   */
+  visionReasoningEffort?: string
 }
 
 /** Schemastery 校验(同时是 settings 段的 schema)。 */
@@ -79,6 +86,7 @@ export const Config: z<Config> = z.object({
     model: z.string(),
   })).default(DEFAULT_NATIVE_VISION),
   autoDeclareInput: z.boolean().default(true),
+  visionReasoningEffort: z.string().default(DEFAULT_VISION_REASONING_EFFORT),
 })
 
 /**
@@ -109,15 +117,17 @@ export function apply(ctx: Context, config: Config): void {
    * 识图(同分组即同一组凭据,例如 sub2api 分组走 QX key);否则回退到
    * 配置的默认识图路由。
    */
-  const resolveVisionRoute = (provider: string | undefined): { provider: string; model: string } => {
+  const resolveVisionRoute = (provider: string | undefined): { provider: string; model: string; reasoningEffort: string } => {
+    const reasoningEffort = (current() ?? {}).visionReasoningEffort ?? DEFAULT_VISION_REASONING_EFFORT
     if (provider !== undefined) {
       const match = nativeVision().find(entry => entry.provider === provider)
-      if (match !== undefined) return { provider: match.provider, model: match.model }
+      if (match !== undefined) return { provider: match.provider, model: match.model, reasoningEffort }
     }
     const cfg = current() ?? {}
     return {
       provider: cfg.visionProvider ?? DEFAULT_VISION_PROVIDER,
       model: cfg.visionModel ?? DEFAULT_VISION_MODEL,
+      reasoningEffort,
     }
   }
 

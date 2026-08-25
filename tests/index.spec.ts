@@ -197,6 +197,7 @@ describe('auto-vision agent/pre-step(白名单机制)', () => {
     const first = llm.stream.mock.calls[0][0]
     expect(first.provider).toBe('deepseek')
     expect(first.model).toBe('deepseek-v4-flash-vision-exp')
+    expect(first.reasoningEffort).toBe('high')
 
     // 切到官方分组 → 用官方的 vision-exp 识图。
     await assemble('deepseek-official', 'deepseek-v4-pro')
@@ -204,6 +205,7 @@ describe('auto-vision agent/pre-step(白名单机制)', () => {
     const second = llm.stream.mock.calls[1][0]
     expect(second.provider).toBe('deepseek-official')
     expect(second.model).toBe('deepseek-v4-flash-vision-exp')
+    expect(second.reasoningEffort).toBe('high')
   })
 
   it('分组无白名单项时回退默认识图路由', async () => {

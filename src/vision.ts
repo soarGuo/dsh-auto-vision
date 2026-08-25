@@ -6,6 +6,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {
   ContentBlock,
   ImageBlock,
@@ -161,7 +162,7 @@ export interface DescribedImages {
  */
 export async function describeImages(
   ctx: Context,
-  vision: { provider: string; model: string },
+  vision: { provider: string; model: string; reasoningEffort?: string },
   message: UserMessage,
   signal?: AbortSignal,
 ): Promise<DescribedImages> {
@@ -181,6 +182,9 @@ export async function describeImages(
       model: vision.model,
       system: DESCRIBE_SYSTEM,
       messages: [visionMessage],
+      ...vision.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: ReasoningEffortId(vision.reasoningEffort) },
       signal,
     }))
   } catch (error) {

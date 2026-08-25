@@ -24,7 +24,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from 'schemastery'
 import { declareImageInputs } from './declare.ts'
-import { describeImages, hasImage, PLUGIN_NAME } from './vision.ts'
+import { describeImages, hasImage, PLUGIN_NAME, replaceRequestImages } from './vision.ts'
 
 /** 稳定 cordis 插件名(与 cordis.patch.yml 的 insert id 一致)。 */
 export const name = PLUGIN_NAME
@@ -174,14 +174,37 @@ export function apply(ctx: Context, config: Config): void {
     if (isNativeVision(agent)) return decision
     // 识图路由跟随当前分组:用当前 provider 分组里的视觉模型识图。
     const route = resolveVisionRoute(currentModel(agent).provider)
-    // 带图消息拆成两条:原消息(图片移除、文字原样)+ 独立识别描述消息。
+    // 原消息保持原样(图片块保留,GUI 显示缩略图);
+    // 只在其后追加独立的识别描述消息。发给模型的请求会在
+    // llm/stream 阶段把图片替换为短占位(见下)。
     const expanded = await Promise.all(decision.messages.map(async message => {
       if (!hasImage(message)) return [message]
-      const { rewritten, description } = await describeImages(ctx, route, message, signal)
-      return description === null ? [rewritten] : [rewritten, description]
+      const description = await describeImages(ctx, route, message, signal)
+      return [message, description]
     }))
     return { kind: 'enter', messages: expanded.flat() }
   }, { prepend: true })
+
+  // ---- 请求前剥离:显示保留图片,发给模型的请求换成短占位 ----
+  // llm/stream 的 options 是冻结的(文档要求只读),所以这里构造替换版
+  // options 重新进入 stream;替换后的消息不再含图,第二次进入时直接 next()。
+  ctx.on('llm/stream', async function* (options, next) {
+    const provider = options.provider
+    const model = options.model
+    if (provider === undefined || model === undefined) return yield* next()
+    // 原生视觉模型(白名单)正常发图,不干预。
+    if (nativeVision().some(entry => entry.provider === provider && entry.model === model)) {
+      return yield* next()
+    }
+    if (!options.messages.some(message => hasImage(message))) return yield* next()
+    const stripped = {
+      ...options,
+      messages: options.messages.map(message => (
+        hasImage(message) ? replaceRequestImages(message) : message
+      )),
+    }
+    yield* ctx.llm.stream(stripped)
+  })
 
   // ---- 自动配置:给已配置模型补 image 输入声明 ----
   // 触发时机:插件加载后(延迟,等 llm 插件的 settings 段注册完成)、

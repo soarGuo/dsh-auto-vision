@@ -11,6 +11,7 @@ import {
   formatStamp,
   hasImage,
   plainText,
+  replaceRequestImages,
   stripImages,
 } from '../src/vision.ts'
 
@@ -175,19 +176,13 @@ describe('describeImages', () => {
     },
   }) as unknown as Context
 
-  it('原消息保持原样(仅移除图片),识别描述独立成 notice 消息', async () => {
+  it('返回独立 notice 描述消息(原消息由调用方保留)', async () => {
     const message = imageMessage('a', 'b')
-    const { rewritten, description } = await describeImages(ctx(), { provider: 'p', model: 'm' }, message)
-    // 原消息:文字原样、无图片、无描述混入。
-    expect(rewritten.content.some(block => block.type === 'image')).toBe(false)
-    expect(rewritten.content).toEqual([{ type: 'text', text: '这是什么?' }])
-    expect(rewritten.source).toEqual({ kind: 'user' })
-    // 描述消息:独立 notice 形式,带时间戳与摘要。
-    expect(description).not.toBeNull()
-    const text = description!.content.filter(block => block.type === 'text').map(block => block.text).join('')
+    const description = await describeImages(ctx(), { provider: 'p', model: 'm' }, message)
+    const text = description.content.filter(block => block.type === 'text').map(block => block.text).join('')
     expect(text).toContain('[截图识别 ')
     expect(text).toContain('图1:这是一张截图')
-    expect(description!.source).toEqual({
+    expect(description.source).toEqual({
       kind: 'plugin',
       plugin: 'auto-vision',
       form: 'notice',
@@ -205,7 +200,7 @@ describe('describeImages', () => {
     expect(options.messages[0].content.filter((block: { type: string }) => block.type === 'image')).toHaveLength(2)
   })
 
-  it('工具结果内嵌图片也被识图:原消息保留信封,描述独立', async () => {
+  it('工具结果内嵌图片也被识图', async () => {
     const toolMessage = createUserMessage({
       content: [{
         type: 'tool-result',
@@ -217,18 +212,10 @@ describe('describeImages', () => {
       }],
       source: { kind: 'tool', callId: 'call' as never },
     })
-    const { rewritten, description } = await describeImages(ctx(), { provider: 'p', model: 'm' }, toolMessage)
-    // 原消息:无任何图片块残留(含嵌套),tool-result 与文本信封保留。
-    expect(hasImage(rewritten)).toBe(false)
-    const result = rewritten.content[0]
-    expect(result.type).toBe('tool-result')
-    if (result.type !== 'tool-result') return
-    expect(result.content.some(block => block.type === 'text' && block.text.includes('shot.png'))).toBe(true)
-    expect(rewritten.source).toEqual({ kind: 'tool', callId: 'call' as never })
-    // 描述独立成消息。
-    const text = description!.content.filter(block => block.type === 'text').map(block => block.text).join('')
+    const description = await describeImages(ctx(), { provider: 'p', model: 'm' }, toolMessage)
+    const text = description.content.filter(block => block.type === 'text').map(block => block.text).join('')
     expect(text).toContain('图1:这是一张截图')
-    expect(description!.source).toEqual({
+    expect(description.source).toEqual({
       kind: 'plugin',
       plugin: 'auto-vision',
       form: 'notice',
@@ -236,7 +223,7 @@ describe('describeImages', () => {
     })
   })
 
-  it('识别失败降级:原消息仍可用,失败说明进描述消息', async () => {
+  it('识别失败降级:失败说明进描述消息', async () => {
     const failing = {
       llm: {
         stream: vi.fn(async function* () {
@@ -244,12 +231,10 @@ describe('describeImages', () => {
         }),
       },
     } as unknown as Context
-    const { rewritten, description } = await describeImages(failing, { provider: 'p', model: 'm' }, imageMessage('a'))
-    expect(rewritten.content.some(block => block.type === 'image')).toBe(false)
-    expect(rewritten.content).toEqual([{ type: 'text', text: '这是什么?' }])
-    const text = description!.content.filter(block => block.type === 'text').map(block => block.text).join('')
+    const description = await describeImages(failing, { provider: 'p', model: 'm' }, imageMessage('a'))
+    const text = description.content.filter(block => block.type === 'text').map(block => block.text).join('')
     expect(text).toContain('[识图失败:gateway 500]')
-    expect(description!.source).toEqual({
+    expect(description.source).toEqual({
       kind: 'plugin',
       plugin: 'auto-vision',
       form: 'notice',
@@ -273,5 +258,46 @@ describe('describeImages', () => {
       imageMessage('a'),
       controller.signal,
     )).rejects.toThrow('识图调用被中止:cancelled')
+  })
+})
+
+describe('replaceRequestImages', () => {
+  it('把图片块替换为短占位文本,保留 id 与 source', () => {
+    const message = imageMessage('a', 'b')
+    const replaced = replaceRequestImages(message)
+    expect(replaced.id).toBe(message.id)
+    expect(replaced.source).toEqual({ kind: 'user' })
+    expect(hasImage(replaced)).toBe(false)
+    const texts = replaced.content.filter(block => block.type === 'text').map(block => block.text)
+    expect(texts[0]).toBe('这是什么?')
+    expect(texts[1]).toContain('[截图 1/2')
+    expect(texts[2]).toContain('[截图 2/2')
+  })
+
+  it('单图占位不带序号', () => {
+    const replaced = replaceRequestImages(imageMessage('only'))
+    const texts = replaced.content.filter(block => block.type === 'text').map(block => block.text)
+    expect(texts[1]).toBe('[截图已由 auto-vision 识别,内容见紧随其后的上下文条目]')
+  })
+
+  it('工具结果内嵌图片同样替换', () => {
+    const toolMessage = createUserMessage({
+      content: [{
+        type: 'tool-result',
+        toolCallId: 'call' as never,
+        content: [
+          { type: 'text', text: '<path>shot.png</path>' },
+          { type: 'image', attachment: REF('nested') },
+        ],
+      }],
+      source: { kind: 'tool', callId: 'call' as never },
+    })
+    const replaced = replaceRequestImages(toolMessage)
+    expect(hasImage(replaced)).toBe(false)
+    const result = replaced.content[0]
+    expect(result.type).toBe('tool-result')
+    if (result.type !== 'tool-result') return
+    expect(result.content.some(block => block.type === 'text' && block.text.includes('shot.png'))).toBe(true)
+    expect(result.content.some(block => block.type === 'text' && block.text.includes('已由 auto-vision 识别'))).toBe(true)
   })
 })

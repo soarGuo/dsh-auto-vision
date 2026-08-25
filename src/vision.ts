@@ -10,6 +10,7 @@ import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {
   ContentBlock,
   ImageBlock,
+  Message,
   StreamChunk,
   UserMessage,
 } from '@deepseek-ai/dsh-llm'
@@ -139,33 +140,60 @@ export async function collectText(stream: AsyncIterable<StreamChunk>): Promise<s
 }
 
 /**
- * 一次识图的结果:原消息(图片移除、其余原样)与独立的识别描述消息。
+ * 请求级占位文本:替换请求消息里的图片块,完整识别内容在紧随其后的
+ * 描述消息里,这里只放短占位,不重复消耗 token。
  */
-export interface DescribedImages {
-  /** 原消息:仅递归移除图片块,文字与 source 保持原样。 */
-  rewritten: UserMessage
-  /** 独立的识别描述(context)消息;无图时或无需注入时为 null。 */
-  description: UserMessage | null
+export function imagePlaceholderText(index: number, total: number): string {
+  return total > 1
+    ? `[截图 ${index}/${total} 已由 auto-vision 识别,内容见紧随其后的上下文条目]`
+    : '[截图已由 auto-vision 识别,内容见紧随其后的上下文条目]'
 }
 
 /**
- * 对一条携带图片的用户消息执行识图,拆成两条输出:
- * 1. `rewritten` — 原消息保持原样(仅移除图片块,顶层与工具结果内);
- * 2. `description` — 独立的识别描述消息(source 为插件 notice 形式,
- *    GUI 渲染为折叠的上下文行,展开看完整描述),带时间戳以便新旧区分。
+ * 把一条消息里的全部图片块(递归工具结果)替换为短占位文本。
+ * 用于请求前剥离:GUI 显示的消息保留图片,只有发给模型的请求被替换。
+ * @returns 新消息对象(保留 id 与 source,仅 content 替换)。
+ */
+export function replaceRequestImages(
+  message: Message,
+): Message {
+  const total = collectImages(message.content).length
+  let seen = 0
+  const walk = (blocks: readonly ContentBlock[]): ContentBlock[] => blocks.flatMap((block): ContentBlock[] => {
+    switch (block.type) {
+      case 'image': {
+        seen += 1
+        return [{ type: 'text', text: imagePlaceholderText(seen, total) }]
+      }
+      case 'tool-result':
+        return containsImage(block.content)
+          ? [{ ...block, content: walk(block.content) }]
+          : [block]
+      default:
+        return [block]
+    }
+  })
+  return { ...message, content: walk(message.content) }
+}
+
+/**
+ * 对一条携带图片的用户消息执行识图,返回独立的识别描述消息
+ * (source 为插件 notice 形式,GUI 渲染为折叠的上下文行)。
+ * 原消息不再改写:图片块保留在会话历史里供 GUI 显示,发给模型的
+ * 请求由 `replaceRequestImages` 在 llm/stream 阶段剥离。
  * 识别失败降级为描述消息里的失败说明;用户取消则原样上抛。
  * @param ctx - 插件上下文(llm 服务来自此)。
  * @param vision - 识图路由(provider/model)。
  * @param message - 原用户消息(含图,含工具结果内嵌图)。
  * @param signal - 用户取消信号。
- * @returns 原样消息与识别描述消息。
+ * @returns 识别描述消息。
  */
 export async function describeImages(
   ctx: Context,
   vision: { provider: string; model: string; reasoningEffort?: string },
   message: UserMessage,
   signal?: AbortSignal,
-): Promise<DescribedImages> {
+): Promise<UserMessage> {
   const images = collectImages(message.content)
   const visionMessage = createUserMessage({
     content: [
@@ -194,23 +222,16 @@ export async function describeImages(
     description = `[识图失败:${detail}]`
     failed = true
   }
-  return {
-    // 原消息:图片块移除,文字与 source 原样保留。
-    rewritten: createUserMessage({
-      content: stripImages(message.content, ''),
-      source: message.source,
-    }),
-    description: createUserMessage({
-      content: [{
-        type: 'text',
-        text: `[截图识别 ${formatStamp(new Date())}]\n${description}`,
-      }],
-      source: {
-        kind: 'plugin',
-        plugin: PLUGIN_NAME,
-        form: 'notice',
-        summary: failed ? '图片识别失败' : `识别了 ${images.length} 张图片`,
-      },
-    }),
-  }
+  return createUserMessage({
+    content: [{
+      type: 'text',
+      text: `[截图识别 ${formatStamp(new Date())}]\n${description}`,
+    }],
+    source: {
+      kind: 'plugin',
+      plugin: PLUGIN_NAME,
+      form: 'notice',
+      summary: failed ? '图片识别失败' : `识别了 ${images.length} 张图片`,
+    },
+  })
 }

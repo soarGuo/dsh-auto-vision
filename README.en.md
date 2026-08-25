@@ -6,9 +6,10 @@
 
 ## Features
 
-- **Your message stays untouched.** Pasting an image into a non-vision model (e.g. `deepseek-v4-pro`, `deepseek-v4-flash`) keeps your text exactly as sent; the vision description becomes a separate, collapsed context entry (`auto-vision · recognized N image(s)`), expandable like a thinking row.
+- **Your message stays untouched — images stay visible.** Pasting an image into a non-vision model (e.g. `deepseek-v4-pro`, `deepseek-v4-flash`) keeps your message exactly as sent, thumbnail included (just like a vision-exp session); the vision description becomes a separate, collapsed context entry (`auto-vision · recognized N image(s)`), expandable like a thinking row.
 - **Durable memory.** Descriptions are appended to the session log, so later turns can reference the same image memory. Every new screenshot adds a fresh timestamped description; the model naturally favors the latest one.
 - **Per-model, not per-session.** Models on the `nativeVision` allowlist (e.g. vision models) are never touched — they see the images themselves.
+- **Request-level stripping.** Before each model request (`llm/stream`), image blocks are swapped for short placeholders (full content lives in the description message, so nothing is double-billed), meaning images never reach the gateway; the GUI display is unaffected.
 - **Recursive coverage.** Images nested inside tool results (e.g. `read_image`) are bridged too, so a model that "successfully" reads an image never sends raw bytes to a gateway that would reject them.
 - **Failure-safe.** Recognition failures degrade to a `[recognition failed: …]` note in the context row; your text still reaches the model. Cancellation aborts cleanly.
 
@@ -16,8 +17,9 @@
 
 1. **Admission (settings)**: the GUI rejects images for models that do not declare `image` input. Declare `input: [text, image]` on the bridged models in `settings.yaml` — the admission check trusts the model declaration and lets the message in.
 2. **Accurate model snapshot (plugin)**: the plugin listens to `system-prompt/assemble` (fires right before `agent/pre-step`, same step) and reads the provider/model the GUI just selected from `assembly.variables`.
-3. **Rewrite (plugin)**: at `agent/pre-step`, images in messages whose model is not on the `nativeVision` allowlist are removed and replaced by a separate notice-form context message carrying the vision description. The agent loop appends both messages to the session log.
-4. **Group-following recognition route**: the recognition route follows the session model's provider group — images sent in one provider group are described by that group's own vision model (same credentials); groups without a native vision entry fall back to `visionProvider`/`visionModel`.
+3. **Split injection (plugin)**: at `agent/pre-step`, messages whose model is not on the `nativeVision` allowlist are kept exactly as sent (images included), and a separate notice-form context message carrying the vision description is appended after them. The agent loop appends both messages to the session log.
+4. **Request-level stripping (plugin)**: at `llm/stream`, image blocks in requests for non-allowlist models are swapped for short placeholder text, so the gateway never receives image bytes while the GUI keeps showing the thumbnails.
+5. **Group-following recognition route**: the recognition route follows the session model's provider group — images sent in one provider group are described by that group's own vision model (same credentials); groups without a native vision entry fall back to `visionProvider`/`visionModel`.
 
 No DSH source changes required.
 

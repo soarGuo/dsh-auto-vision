@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { StreamChunk } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import AgentRegistry, { agentEvents, Inbox, type Agent } from '@deepseek-ai/dsh-agent'
@@ -116,17 +116,17 @@ beforeEach(() => {
 })
 
 describe('auto-vision agent/pre-step(白名单机制)', () => {
-  it('assemble 快照为白名单外模型(pro):原消息原样 + 独立识别描述', async () => {
+  it('assemble 快照为白名单外模型(pro):原消息保留图片 + 独立识别描述', async () => {
     const { llm, fire, assemble } = await mount()
     await assemble('deepseek', 'deepseek-v4-pro')
     const decision = await fire(imageProposal())
     expect(decision.kind).toBe('enter')
     if (decision.kind !== 'enter') return
-    // 拆成两条:原消息(图片移除、文字原样)+ 识别描述消息。
+    // 两条:原消息(图片保留,供 GUI 显示)+ 识别描述消息。
     expect(decision.messages).toHaveLength(2)
     const original = decision.messages[0]
-    expect(original.content.some(block => block.type === 'image')).toBe(false)
-    expect(original.content).toEqual([{ type: 'text', text: '这个报错怎么修?' }])
+    expect(original.content.some(block => block.type === 'image')).toBe(true)
+    expect(original.content[0]).toEqual({ type: 'text', text: '这个报错怎么修?' })
     expect(original.source).toEqual({ kind: 'user' })
     const description = decision.messages[1]
     const text = description.content.filter(block => block.type === 'text').map(block => block.text).join('\n')
@@ -170,7 +170,7 @@ describe('auto-vision agent/pre-step(白名单机制)', () => {
     const first = await fire(imageProposal())
     if (first.kind !== 'enter') throw new Error('expected enter')
     expect(first.messages).toHaveLength(2)
-    expect(first.messages[0].content.some(block => block.type === 'image')).toBe(false)
+    expect(first.messages[0].content.some(block => block.type === 'image')).toBe(true)
     expect(llm.stream).toHaveBeenCalledTimes(1)
 
     // 自定义模型在白名单 → 不干预。
@@ -217,5 +217,63 @@ describe('auto-vision agent/pre-step(白名单机制)', () => {
     expect(options.model).toBe('deepseek-v4-flash-vision-exp')
     // 识别用的消息源是插件,避免与用户消息混淆。
     expect(options.messages[0].source).toEqual({ kind: 'plugin', plugin: 'auto-vision' })
+  })
+})
+
+describe('auto-vision llm/stream(请求前剥离图片)', () => {
+  const MARKER = { type: 'text-delta', index: 0, text: '__MARKER__' } as const
+
+  async function streamThrough(ctx: Context, options: GenerateOptions): Promise<unknown[]> {
+    const chunks: unknown[] = []
+    const result = ctx.waterfall(
+      'llm/stream',
+      options,
+      () => (async function* () { yield MARKER })(),
+    ) as AsyncIterable<unknown>
+    for await (const chunk of result) chunks.push(chunk)
+    return chunks
+  }
+
+  it('白名单外模型 + 带图消息:剥离图片并短路重发', async () => {
+    const fixture = await mount()
+    const options: GenerateOptions = {
+      provider: 'deepseek',
+      model: 'deepseek-v4-pro',
+      messages: [imageProposal()],
+    }
+    const chunks = await streamThrough(fixture.ctx, options)
+    // 不走 default(MARKER 未出现),走 fake stream 的文本。
+    expect(chunks.some(c => JSON.stringify(c) === JSON.stringify(MARKER))).toBe(false)
+    expect(chunks.some(c => (c as { type: string }).type === 'block-start')).toBe(true)
+    // fake llm.stream 收到剥离后的 options。
+    const streamed = fixture.llm.stream.mock.calls.at(-1)?.[0]
+    expect(streamed.provider).toBe('deepseek')
+    expect(streamed.messages[0].content.some((b: { type: string }) => b.type === 'image')).toBe(false)
+    const texts = streamed.messages[0].content.filter((b: { type: string }) => b.type === 'text').map((b: { text: string }) => b.text)
+    expect(texts.join('')).toContain('已由 auto-vision 识别')
+  })
+
+  it('白名单模型 + 带图:不干预,走默认流', async () => {
+    const fixture = await mount()
+    const options: GenerateOptions = {
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash-vision-exp',
+      messages: [imageProposal()],
+    }
+    const chunks = await streamThrough(fixture.ctx, options)
+    expect(chunks).toHaveLength(1)
+    expect(JSON.stringify(chunks[0])).toBe(JSON.stringify(MARKER))
+  })
+
+  it('无图消息:不干预,走默认流', async () => {
+    const fixture = await mount()
+    const options: GenerateOptions = {
+      provider: 'deepseek',
+      model: 'deepseek-v4-pro',
+      messages: [textProposal()],
+    }
+    const chunks = await streamThrough(fixture.ctx, options)
+    expect(chunks).toHaveLength(1)
+    expect(JSON.stringify(chunks[0])).toBe(JSON.stringify(MARKER))
   })
 })

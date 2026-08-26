@@ -86,6 +86,10 @@ export function stripImages(blocks: readonly ContentBlock[], description: string
 export function buildDescribePrompt(imageCount: number, userText: string): string {
   const original = userText.length > 0 ? userText : '(无文字说明)'
   return [
+    // 识图指令直接并入用户文本,不占用 system 槽位:
+    // 部分网关不接受 system 转 developer 的角色,这样最稳。
+    DESCRIBE_SYSTEM,
+    '',
     '以下图片需要被识别为详细的文字描述,供一个无法直接查看图片的模型引用。请依次详细描述这些图片,使该模型仅凭文字就能引用图片内容。',
     '',
     `图片数量:${imageCount} 张。请用「图1:」「图2:」…逐张分节输出,每张包含:`,
@@ -195,7 +199,8 @@ export async function describeImages(
     description = await collectText(ctx.llm.stream({
       provider: vision.provider,
       model: vision.model,
-      system: DESCRIBE_SYSTEM,
+      // 不传 system:识图指令已并入 prompt 文本,避免网关拒绝
+      // system→developer 的角色转换。
       messages: [visionMessage],
       ...vision.reasoningEffort === undefined
         ? {}

@@ -190,13 +190,19 @@ describe('describeImages', () => {
     })
   })
 
-  it('识图请求带上了全部图片块与 system', async () => {
+  it('识图请求带上了全部图片块,指令并入 prompt 而非 system 槽位', async () => {
     const fake = ctx()
     await describeImages(fake, { provider: 'p', model: 'm' }, imageMessage('a', 'b'))
     const options = (fake.llm.stream as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(options.provider).toBe('p')
     expect(options.model).toBe('m')
-    expect(options.system).toContain('识图助手')
+    // 不占用 system 槽位(部分网关拒绝 developer 角色)。
+    expect(options.system).toBeUndefined()
+    const promptText = options.messages[0].content
+      .filter((block: { type: string }) => block.type === 'text')
+      .map((block: { text: string }) => block.text)
+      .join('')
+    expect(promptText).toContain('识图助手')
     expect(options.messages[0].content.filter((block: { type: string }) => block.type === 'image')).toHaveLength(2)
   })
 

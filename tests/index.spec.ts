@@ -50,6 +50,7 @@ interface Fixture {
   agent: Agent
   llm: {
     resolveModelInfo: ReturnType<typeof vi.fn>
+    listModels: ReturnType<typeof vi.fn>
     stream: ReturnType<typeof vi.fn>
   }
   fire: (proposal: ReturnType<typeof createUserMessage>) => Promise<PreStepDecision>
@@ -66,6 +67,10 @@ async function mount(options: { agentModel?: string; pluginConfig?: Record<strin
       name: model,
       inputModalities: ['text'],
     })),
+    // 模拟模型目录:只有 sub2api 分组报了一个白名单模型名的视觉模型。
+    listModels: vi.fn(async (provider: string) => provider === 'sub2api'
+      ? [{ id: 'deepseek-v4-flash-vision-exp' }]
+      : []),
     stream: vi.fn(async function* () {
       yield* textChunks('图1:这是一张错误截图')
     }),
@@ -206,6 +211,28 @@ describe('auto-vision agent/pre-step(白名单机制)', () => {
     expect(second.provider).toBe('deepseek-official')
     expect(second.model).toBe('deepseek-v4-flash-vision-exp')
     expect(second.reasoningEffort).toBe('high')
+  })
+
+  it('分组改名后自动跟随:按模型名匹配到本分组的视觉模型', async () => {
+    const { llm, fire, assemble } = await mount()
+    // 分组名 sub2api(白名单里没有这个 provider),但组内有
+    // deepseek-v4-flash-vision-exp(白名单模型名)→ 用本分组识图。
+    await assemble('sub2api', 'deepseek-v4-pro')
+    await fire(imageProposal())
+    const options = llm.stream.mock.calls[0][0]
+    expect(options.provider).toBe('sub2api')
+    expect(options.model).toBe('deepseek-v4-flash-vision-exp')
+    expect(llm.listModels).toHaveBeenCalledWith('sub2api')
+  })
+
+  it('切到白名单模型名的视觉模型(任意分组)不干预', async () => {
+    const { llm, fire, assemble } = await mount()
+    // 分组 sub2api 的 vision-exp:按模型名命中白名单 → 不干预。
+    await assemble('sub2api', 'deepseek-v4-flash-vision-exp')
+    const decision = await fire(imageProposal())
+    if (decision.kind !== 'enter') throw new Error('expected enter')
+    expect(decision.messages[0].content.some(block => block.type === 'image')).toBe(true)
+    expect(llm.stream).not.toHaveBeenCalled()
   })
 
   it('分组无白名单项时回退默认识图路由', async () => {

@@ -262,25 +262,26 @@ describe('describeImages', () => {
 })
 
 describe('replaceRequestImages', () => {
-  it('把图片块替换为短占位文本,保留 id 与 source', () => {
+  it('移除图片块且不插入任何文本,保留 id 与 source', () => {
     const message = imageMessage('a', 'b')
     const replaced = replaceRequestImages(message)
     expect(replaced.id).toBe(message.id)
     expect(replaced.source).toEqual({ kind: 'user' })
     expect(hasImage(replaced)).toBe(false)
-    const texts = replaced.content.filter(block => block.type === 'text').map(block => block.text)
-    expect(texts[0]).toBe('这是什么?')
-    expect(texts[1]).toContain('[截图 1/2')
-    expect(texts[2]).toContain('[截图 2/2')
+    // 只剩原文,没有占位文本。
+    expect(replaced.content).toEqual([{ type: 'text', text: '这是什么?' }])
   })
 
-  it('单图占位不带序号', () => {
-    const replaced = replaceRequestImages(imageMessage('only'))
-    const texts = replaced.content.filter(block => block.type === 'text').map(block => block.text)
-    expect(texts[1]).toBe('[截图已由 auto-vision 识别,内容见紧随其后的上下文条目]')
+  it('纯图消息剥离后内容为空', () => {
+    const pureImage = createUserMessage({
+      content: [{ type: 'image', attachment: REF('only') }],
+      source: { kind: 'user' },
+    })
+    const replaced = replaceRequestImages(pureImage)
+    expect(replaced.content).toEqual([])
   })
 
-  it('工具结果内嵌图片同样替换', () => {
+  it('工具结果内嵌图片同样移除', () => {
     const toolMessage = createUserMessage({
       content: [{
         type: 'tool-result',
@@ -298,6 +299,6 @@ describe('replaceRequestImages', () => {
     expect(result.type).toBe('tool-result')
     if (result.type !== 'tool-result') return
     expect(result.content.some(block => block.type === 'text' && block.text.includes('shot.png'))).toBe(true)
-    expect(result.content.some(block => block.type === 'text' && block.text.includes('已由 auto-vision 识别'))).toBe(true)
+    expect(result.content.some(block => block.type === 'image')).toBe(false)
   })
 })

@@ -249,8 +249,8 @@ describe('auto-vision llm/stream(请求前剥离图片)', () => {
     const streamed = fixture.llm.stream.mock.calls.at(-1)?.[0]
     expect(streamed.provider).toBe('deepseek')
     expect(streamed.messages[0].content.some((b: { type: string }) => b.type === 'image')).toBe(false)
-    const texts = streamed.messages[0].content.filter((b: { type: string }) => b.type === 'text').map((b: { text: string }) => b.text)
-    expect(texts.join('')).toContain('已由 auto-vision 识别')
+    // 请求里只有原文,没有占位文本。
+    expect(streamed.messages[0].content).toEqual([{ type: 'text', text: '这个报错怎么修?' }])
   })
 
   it('白名单模型 + 带图:不干预,走默认流', async () => {

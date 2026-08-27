@@ -1,6 +1,6 @@
 {
   "name": "dsh-auto-image",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Bridges images into text for DeepSeek Harness: when the session's selected model cannot see images, a configured vision model describes them and the descriptions enter the durable session history as folded context rows — your message stays untouched.",
   "type": "module",
   "main": "lib/index.js",

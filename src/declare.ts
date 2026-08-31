@@ -13,8 +13,7 @@
  * @module dsh-auto-vision/declare
  */
 
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
+import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
 
 /** 模型输入能力声明在两个命名空间里的字段名不同。 */
 export const IMAGE_DECLARATION_FIELDS = {
@@ -90,15 +89,12 @@ export function planImageDeclarations(
  * @returns 完成全部写入后 resolve;单段写入失败会 reject。
  */
 export async function declareImageInputs(
-  settings: {
-    get(ns: SettingsNamespace): unknown
-    update(ns: SettingsNamespace, patch: object): Promise<void>
-  },
+  settings: SettingsProvider,
   namespaces: readonly ImageDeclarationNamespace[] = IMAGE_DECLARATION_NAMESPACES,
 ): Promise<void> {
   for (const ns of namespaces) {
-    const section = settings.get(settingsNamespace(ns)) as Section | undefined
+    const section = settings.get(ns) as Section | undefined
     const patch = planImageDeclarations(section, ns)
-    if (patch !== null) await settings.update(settingsNamespace(ns), patch)
+    if (patch !== null) await settings.update(ns, patch)
   }
 }

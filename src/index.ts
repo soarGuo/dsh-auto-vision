@@ -21,7 +21,8 @@ import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-llm'
 // 事件类型:'system-prompt/assemble' waterfall 与 PromptAssembly。
 import type {} from '@deepseek-ai/dsh-system-prompt'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+// 类型面:settings 服务的 Context 声明(settings 段注册在 inject 内完成)。
+import type {} from '@deepseek-ai/dsh-settings'
 import z from 'schemastery'
 import { declareImageInputs } from './declare.ts'
 import { describeImages, hasImage, PLUGIN_NAME, replaceRequestImages } from './vision.ts'
@@ -33,7 +34,7 @@ export const name = PLUGIN_NAME
 export const inject = ['agents', 'llm']
 
 /** 插件配置命名空间(settings.yaml 的 auto-vision 段)。 */
-export const AUTO_VISION_NAMESPACE = settingsNamespace('auto-vision')
+export const AUTO_VISION_NAMESPACE = 'auto-vision'
 
 /** 默认识图路由:官方 DeepSeek 的视觉实验模型。 */
 export const DEFAULT_VISION_PROVIDER = 'deepseek-official'
@@ -99,13 +100,18 @@ export const Config: z<Config> = z.object({
  */
 export function apply(ctx: Context, config: Config): void {
   let current: () => Config = () => config
-  installSettingsSection(ctx, AUTO_VISION_NAMESPACE, Config, config, {
-    setSource: source => {
-      current = source
-    },
-    onChange: () => {
-      // 识图路由与白名单按次读取 current(),无需额外刷新。
-    },
+  // settings 是可选服务:web/CLI 组合里由 settings-file 提供。服务缺失时
+  // 插件照常工作,只是配置段不会回写 settings.yaml(全部走组合入口默认值)。
+  // installSection = 注册命名空间 schema + 以组合入口为 base 层 + setSource/watch。
+  ctx.inject(['settings'], (settingsCtx) => {
+    settingsCtx.settings.installSection(settingsCtx, AUTO_VISION_NAMESPACE, Config, config, {
+      setSource: source => {
+        current = source
+      },
+      onChange: () => {
+        // 识图路由与白名单按次读取 current(),无需额外刷新。
+      },
+    })
   })
 
   /** 原生视觉白名单(每次判断时读取最新配置)。 */

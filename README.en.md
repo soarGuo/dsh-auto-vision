@@ -27,7 +27,7 @@ No DSH source changes required.
 
 - DeepSeek Harness with the plugin bundle system (`dsh plugin add`, profiles).
 - A registered vision model route (any provider; `deepseek-official/deepseek-v4-flash-vision-exp` by default).
-- DSH host packages `>= 0.1.0-rc.7` (uses `system-prompt/assemble` variables and the notice context form).
+- DSH host packages `>= 0.1.2-alpha.2` (uses the 0.1.2 settings API — `ctx.settings.installSection` — plus `system-prompt/assemble` variables and the notice context form).
 
 ## Install
 
@@ -48,8 +48,8 @@ dsh plugin --profile web add dsh-auto-image
 From a tarball:
 
 ```sh
-pnpm pack          # produces dsh-auto-image-0.1.0.tgz (inside the repo)
-dsh plugin --profile web add ./dsh-auto-image-0.1.0.tgz
+pnpm pack          # produces dsh-auto-image-0.1.3.tgz (inside the repo)
+dsh plugin --profile web add ./dsh-auto-image-0.1.3.tgz
 ```
 
 Then restart DSH.

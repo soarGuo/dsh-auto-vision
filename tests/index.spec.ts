@@ -4,7 +4,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import AgentRegistry, { agentEvents, Inbox, type Agent } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 import * as autoVision from '../src/index.ts'
@@ -76,6 +76,8 @@ async function mount(options: { agentModel?: string; pluginConfig?: Record<strin
     }),
   }
   ctx.provide('llm', llm as never)
+  // 原始配置对象交给 cordis 装载:它用 Config schema 解析,volatile 字段在
+  // 这一步就地生成稳定引用(与真实装载形状一致),插件再用 .get() 读取。
   await ctx.plugin(autoVision, options.pluginConfig ?? {})
 
   const session = Session.create(SessionId('test-session'))
@@ -83,7 +85,8 @@ async function mount(options: { agentModel?: string; pluginConfig?: Record<strin
     id: SessionId('agent-1'),
     options: { provider: 'deepseek', model: options.agentModel ?? 'deepseek-v4-pro' },
     session,
-    inbox: new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} }),
+    // inbox 在 0.1.7 里不再作为值导出,且本插件的判定不读它。
+    inbox: {} as never,
     status: 'running',
     ctx: new Context(),
     send: () => {},
@@ -138,8 +141,7 @@ describe('auto-vision agent/pre-step(白名单机制)', () => {
     expect(text).toContain('[截图识别 ')
     expect(text).toContain('图1:这是一张错误截图')
     expect(description.source).toEqual({
-      kind: 'plugin',
-      plugin: 'auto-vision',
+      kind: 'auto-vision',
       form: 'notice',
       summary: '识别了 1 张图片',
     })
@@ -242,8 +244,8 @@ describe('auto-vision agent/pre-step(白名单机制)', () => {
     const options = llm.stream.mock.calls[0][0]
     expect(options.provider).toBe('deepseek-official')
     expect(options.model).toBe('deepseek-v4-flash-vision-exp')
-    // 识别用的消息源是插件,避免与用户消息混淆。
-    expect(options.messages[0].source).toEqual({ kind: 'plugin', plugin: 'auto-vision' })
+    // 识图请求本身就是一条普通用户消息(不是要写进会话历史的记录)。
+    expect(options.messages[0].source).toEqual({ kind: 'user' })
   })
 })
 

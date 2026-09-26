@@ -27,7 +27,8 @@ No DSH source changes required.
 
 - DeepSeek Harness with the plugin bundle system (`dsh plugin add`, profiles).
 - A registered vision model route (any provider; `deepseek-official/deepseek-v4-flash-vision-exp` by default).
-- DSH host packages `>= 0.1.2-alpha.2` (uses the 0.1.2 settings API — `ctx.settings.installSection` — plus `system-prompt/assemble` variables and the notice context form).
+- DSH host packages `>= 0.1.7-alpha.2` (uses the `SettingsForms` configuration service with volatile config references, the `system-prompt/assemble` variables, and the `notice` context form).
+- Node.js `^22.19.0 || >=24.0.0` — the same range the DSH host declares.
 
 ## Install
 
@@ -95,6 +96,56 @@ llm-pi-ai:
 ```
 
 Remember to add the bridged models to `nativeVision` **only if** they really see images; otherwise the plugin bridges them (which is the point).
+
+## Dependencies, permissions, and failure bounds
+
+**Runtime dependencies: none.** The manifest declares no `dependencies` or
+`optionalDependencies`. At runtime the plugin imports only official modules the
+host already provides:
+
+| Module | Provided by | Used for |
+|---|---|---|
+| `@deepseek-ai/dsh-llm` | the DSH host | message construction, `llm/stream` requests |
+| `@deepseek-ai/schemastery` | the DSH host (a direct dependency of `@deepseek-ai/dsh`) | the configuration schema |
+
+Every other `@deepseek-ai/*` package is referenced at the type level only and
+produces no import after compilation. The plugin bundles nothing, ships no
+native artifacts, and requires the same Node range as the DSH host
+(`^22.19.0 || >=24.0.0`).
+
+**Permission bounds.** The plugin works only through public DSH services and
+never touches system resources directly:
+
+| Capability | Used | Notes |
+|---|---|---|
+| Filesystem | no | imports no `node:fs` and reads/writes no path; images stay attachment references |
+| Network | indirectly | only `ctx.llm.stream` against routes you configured; it issues no HTTP request of its own |
+| Command execution | no | imports no `node:child_process` |
+| Credentials | no | never reads `process.env` or an API key; the DSH adapter owns credentials |
+| Loader mutation | no | no Loader/Fiber insert/remove/patch, no shadowing of official components |
+
+The one thing it writes is an `input: [text, image]` declaration for models
+**you already configured**, through `ctx.settings.update()` (disable with
+`autoDeclareInput: false`). That is a public settings API call writing a
+capability declaration; it never touches credential fields.
+
+**External services.** Recognition calls the model route named by
+`visionProvider` / `visionModel`, producing one real model request and its
+billing. The DSH adapter issues that request with the credentials you configured
+for the route. The plugin contacts no other third party.
+
+**Failure bounds.**
+
+- **Recognition failure** (gateway error, timeout, rate limit): your message is
+  never blocked. The failure is recorded in the description row
+  (e.g. `[识图失败:...]`) and your text still reaches the model.
+- **User cancellation**: the recognition call aborts with the cancel signal and
+  rethrows unchanged; no description row is produced.
+- **No usable vision model**: that turn skips recognition and your message is
+  sent as-is (the bridged model sees no image content).
+- **Missing or invalid config section**: the plugin falls back to its built-in
+  defaults and still loads.
+- **Plugin disabled**: see Caveats — do not send images to bridged models then.
 
 ## Caveats
 

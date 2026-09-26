@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import {
   declareImageInputs,
   IMAGE_DECLARATION_FIELDS,
+  IMAGE_DECLARATION_NAMESPACES,
   planImageDeclarations,
 } from '../src/declare.ts'
 
@@ -80,17 +80,19 @@ describe('planImageDeclarations(llm-deepseek)', () => {
 
 describe('declareImageInputs', () => {
   it('只对有缺失的命名空间写回,幂等', async () => {
-    const update = {
-      'llm-pi-ai': [] as object[],
-      'llm-deepseek': [] as object[],
+    const update: Record<string, object[]> = {
+      'llm-pi-ai': [],
+      'llm-deepseek': [],
     }
-    const get = (ns: string): unknown => ns === 'llm-pi-ai'
-      ? { providers: { gw: { models: [{ id: 'm' }] } } }
-      : { models: [{ id: 'v', inputModalities: ['text', 'image'] }] }
+    // 0.1.7 的 settings 服务按 Loader entry 描述:describe() 给出各段实时值。
+    const describeRows = (piAiModels: object[]): unknown[] => [
+      { ns: 'llm-pi-ai', value: { providers: { gw: { models: piAiModels } } } },
+      { ns: 'llm-deepseek', value: { models: [{ id: 'v', inputModalities: ['text', 'image'] }] } },
+    ]
     const settings = {
-      get: (ns: never) => get(ns as unknown as string),
-      update: async (ns: never, patch: object): Promise<void> => {
-        update[ns as unknown as keyof typeof update].push(patch)
+      describe: () => describeRows([{ id: 'm' }]),
+      update: async (ns: string, patch: object): Promise<void> => {
+        update[ns].push(patch)
       },
     }
     await declareImageInputs(settings as never)
@@ -103,13 +105,21 @@ describe('declareImageInputs', () => {
     expect(patch.providers.gw.models[0]).toEqual({ id: 'm', input: ['text', 'image'] })
 
     // 幂等:第二次无缺失,不再写回。
-    const secondGet = (ns: string): unknown => ns === 'llm-pi-ai'
-      ? { providers: { gw: { models: [{ id: 'm', input: ['text', 'image'] }] } } }
-      : { models: [{ id: 'v', inputModalities: ['text', 'image'] }] }
     const calls: object[] = []
     await declareImageInputs({
-      get: (ns: never) => secondGet(ns as unknown as string),
-      update: async (_ns: never, patch: object): Promise<void> => {
+      describe: () => describeRows([{ id: 'm', input: ['text', 'image'] }]),
+      update: async (_ns: string, patch: object): Promise<void> => {
+        calls.push(patch)
+      },
+    } as never)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('未注册的命名空间被跳过', async () => {
+    const calls: object[] = []
+    await declareImageInputs({
+      describe: () => [],
+      update: async (_ns: string, patch: object): Promise<void> => {
         calls.push(patch)
       },
     } as never)
@@ -119,6 +129,6 @@ describe('declareImageInputs', () => {
   it('字段名常量与命名空间对齐', () => {
     expect(IMAGE_DECLARATION_FIELDS['llm-pi-ai']).toBe('input')
     expect(IMAGE_DECLARATION_FIELDS['llm-deepseek']).toBe('inputModalities')
-    expect(settingsNamespace('llm-pi-ai')).toBeTruthy()
+    expect(IMAGE_DECLARATION_NAMESPACES).toEqual(['llm-pi-ai', 'llm-deepseek'])
   })
 })

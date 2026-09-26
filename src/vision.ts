@@ -10,7 +10,7 @@ import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {
   ContentBlock,
   ImageBlock,
-  Message,
+  RequestMessage,
   StreamChunk,
   UserMessage,
 } from '@deepseek-ai/dsh-llm'
@@ -18,62 +18,62 @@ import type {
 /** 稳定 cordis 插件名(cordis.patch.yml 的 insert id 与 index.ts 共用)。 */
 export const PLUGIN_NAME = 'auto-vision'
 
+/**
+ * 本插件追加的"识图结果"上下文行。
+ *
+ * DSH 0.1.7 起 `MessageSourceMap` 不再有通用的 `plugin` 来源:每个生产者
+ * 在自己的模块里声明自己的 `kind`(见官方 MessageSourceMap 注释)。这里
+ * 按同一约定声明 `auto-vision`,并用 `form: 'notice'` 说明这是一次性事件
+ * ——GUI 渲染为折叠行:summary 常显,正文展开可见。
+ */
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'auto-vision': {
+      kind: 'auto-vision'
+      form: 'notice'
+      /** 一行账号,折叠时显示。 */
+      summary: string
+    }
+  }
+}
+
 /** 视觉识别调用的系统提示:只描述图片,不回答问题。 */
 export const DESCRIBE_SYSTEM = '你是识图助手,只输出对图片客观、详实的描述;不要回答用户的问题,不要给出建议。'
 
-/** 判断内容块列表里是否含有图片(递归工具结果)。 */
+/**
+ * 判断内容块列表里是否含有图片。
+ *
+ * DSH 0.1.7 起工具结果是一等的 `tool` 角色消息(ToolResultMessage),不再
+ * 内嵌 `tool-result` 块,所以图片只出现在当前消息自己的块里;请求级的
+ * 覆盖由调用方逐条消息执行(见 replaceRequestImages)。
+ */
 export function containsImage(blocks: readonly ContentBlock[]): boolean {
-  return blocks.some(block => block.type === 'image'
-    || (block.type === 'tool-result' && containsImage(block.content)))
+  return blocks.some(block => block.type === 'image')
 }
 
-/** 判断一条消息里是否含有图片(递归工具结果)。 */
+/** 判断一条消息里是否含有图片。 */
 export function hasImage(message: { readonly content: readonly ContentBlock[] }): boolean {
   return containsImage(message.content)
 }
 
-/** 递归收集全部图片块(深度优先,保持原顺序)。 */
+/** 收集消息里的全部图片块(保持原顺序)。 */
 export function collectImages(blocks: readonly ContentBlock[]): ImageBlock[] {
-  const images: ImageBlock[] = []
-  for (const block of blocks) {
-    if (block.type === 'image') images.push(block)
-    else if (block.type === 'tool-result') images.push(...collectImages(block.content))
-  }
-  return images
+  return blocks.filter((block): block is ImageBlock => block.type === 'image')
 }
 
-/** 拼接全部文本块(递归工具结果),用于识图 prompt 的上下文。 */
+/** 拼接全部文本块,用于识图 prompt 的上下文。 */
 export function plainText(message: { readonly content: readonly ContentBlock[] }): string {
-  const texts: string[] = []
-  const walk = (blocks: readonly ContentBlock[]): void => {
-    for (const block of blocks) {
-      if (block.type === 'text') texts.push(block.text)
-      else if (block.type === 'tool-result') walk(block.content)
-    }
-  }
-  walk(message.content)
-  return texts.join('\n').trim()
+  return message.content
+    .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
+    .map(block => block.text)
+    .join('\n')
+    .trim()
 }
 
-/**
- * 递归移除所有图片块(顶层与工具结果内),并把描述文本追加到最外层
- * 消息内容末尾。工具结果内的其余块(如 read_image 的文本信封)保留。
- */
+/** 移除全部图片块,并把描述文本追加到内容末尾(其余块原样保留)。 */
 export function stripImages(blocks: readonly ContentBlock[], description: string): ContentBlock[] {
-  const hasImages = containsImage(blocks)
-  const stripped: ContentBlock[] = blocks.flatMap((block): ContentBlock[] => {
-    switch (block.type) {
-      case 'image':
-        return []
-      case 'tool-result':
-        return containsImage(block.content)
-          ? [{ ...block, content: stripImages(block.content, '') }]
-          : [block]
-      default:
-        return [block]
-    }
-  })
-  if (!hasImages) return [...stripped]
+  const stripped = blocks.filter(block => block.type !== 'image')
+  if (stripped.length === blocks.length) return [...blocks]
   return description.length === 0
     ? stripped
     : [...stripped, { type: 'text', text: description }]
@@ -144,27 +144,17 @@ export async function collectText(stream: AsyncIterable<StreamChunk>): Promise<s
 }
 
 /**
- * 把一条消息里的全部图片块(递归工具结果)移除,不插入任何文本。
+ * 把一条消息里的全部图片块移除,不插入任何文本。
  * 用于请求前剥离:GUI 显示的消息保留图片,只有发给模型的请求被剥离;
  * 完整识别内容在紧随其后的描述消息里,请求里不留占位痕迹。
- * @returns 新消息对象(保留 id 与 source,仅 content 替换)。
+ *
+ * 对 `tool` 角色消息同样适用:0.1.7 里工具结果的图片直接是这块消息自己的
+ * image 块,所以逐条消息处理即可覆盖整份请求。
+ * @returns 新消息对象(保留 id 与 source,仅 content 替换);无图时原样返回。
  */
-export function replaceRequestImages(
-  message: Message,
-): Message {
-  const walk = (blocks: readonly ContentBlock[]): ContentBlock[] => blocks.flatMap((block): ContentBlock[] => {
-    switch (block.type) {
-      case 'image':
-        return []
-      case 'tool-result':
-        return containsImage(block.content)
-          ? [{ ...block, content: walk(block.content) }]
-          : [block]
-      default:
-        return [block]
-    }
-  })
-  return { ...message, content: walk(message.content) }
+export function replaceRequestImages(message: RequestMessage): RequestMessage {
+  if (!containsImage(message.content)) return message
+  return { ...message, content: stripImages(message.content, '') }
 }
 
 /**
@@ -191,7 +181,8 @@ export async function describeImages(
       { type: 'text', text: buildDescribePrompt(images.length, plainText(message)) },
       ...images.map(block => ({ type: 'image', attachment: block.attachment }) as const),
     ],
-    source: { kind: 'plugin', plugin: PLUGIN_NAME },
+    // 内部识图请求:对视觉模型而言这就是一条普通用户消息。
+    source: { kind: 'user' },
   })
   let description: string
   let failed = false
@@ -220,8 +211,7 @@ export async function describeImages(
       text: `[截图识别 ${formatStamp(new Date())}]\n${description}`,
     }],
     source: {
-      kind: 'plugin',
-      plugin: PLUGIN_NAME,
+      kind: 'auto-vision',
       form: 'notice',
       summary: failed ? '图片识别失败' : `识别了 ${images.length} 张图片`,
     },

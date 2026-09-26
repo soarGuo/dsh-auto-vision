@@ -13,7 +13,7 @@
  * @module dsh-auto-vision/declare
  */
 
-import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
+import type { SettingsForms } from '@deepseek-ai/dsh-settings'
 
 /** 模型输入能力声明在两个命名空间里的字段名不同。 */
 export const IMAGE_DECLARATION_FIELDS = {
@@ -84,17 +84,24 @@ export function planImageDeclarations(
 /**
  * 扫描 settings 服务的两个模型命名空间,把缺失的 image 声明写回。
  * 幂等;命名空间尚未注册(段为 undefined)时跳过。
- * @param settings - settings 服务(get/update)。
+ *
+ * 0.1.7 的 settings 服务按 Loader entry 描述配置(SettingsForms):先用
+ * `describe()` 读各段实时值,再用 `update()` 合并写回。模型列表字段在官方
+ * llm-deepseek 与 llm-pi-ai 里都位于 volatile 节点之下,因此这两次写入都会
+ * 就地生效,不会重挂对应的适配器。
+ * @param settings - settings 服务(describe/update)。
  * @param namespaces - 要扫描的命名空间,默认全部。
  * @returns 完成全部写入后 resolve;单段写入失败会 reject。
  */
 export async function declareImageInputs(
-  settings: SettingsProvider,
+  settings: SettingsForms,
   namespaces: readonly ImageDeclarationNamespace[] = IMAGE_DECLARATION_NAMESPACES,
 ): Promise<void> {
+  const descriptors = settings.describe()
   for (const ns of namespaces) {
-    const section = settings.get(ns) as Section | undefined
-    const patch = planImageDeclarations(section, ns)
+    const descriptor = descriptors.find(row => row.ns === ns)
+    if (descriptor === undefined) continue
+    const patch = planImageDeclarations(descriptor.value as Section | undefined, ns)
     if (patch !== null) await settings.update(ns, patch)
   }
 }

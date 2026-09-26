@@ -52,41 +52,28 @@ describe('hasImage', () => {
     expect(hasImage(message)).toBe(false)
   })
 
-  it('含图片块返回 true,并递归工具结果', () => {
+  it('含图片块返回 true', () => {
     expect(hasImage(imageMessage('a'))).toBe(true)
-    const nested = createUserMessage({
-      content: [{
-        type: 'tool-result',
-        toolCallId: 'call' as never,
-        content: [{ type: 'image', attachment: REF('inner') }],
-      }],
-      source: { kind: 'tool', callId: 'call' as never },
-    })
-    expect(hasImage(nested)).toBe(true)
   })
 })
 
 describe('collectImages / plainText', () => {
-  it('递归按顺序提取图片块并拼接文本', () => {
+  it('按顺序提取图片块并拼接文本', () => {
     const message = imageMessage('one', 'two')
     expect(collectImages(message.content).map(block => block.attachment.attachmentId)).toEqual(['one', 'two'])
     expect(plainText(message)).toBe('这是什么?')
   })
 
-  it('工具结果内嵌图片也被收集,文本被递归拼接', () => {
+  it('无图片时收集为空,多个文本块按顺序拼接', () => {
     const message = createUserMessage({
-      content: [{
-        type: 'tool-result',
-        toolCallId: 'call' as never,
-        content: [
-          { type: 'text', text: '<path>a.png</path>' },
-          { type: 'image', attachment: REF('nested') },
-        ],
-      }],
-      source: { kind: 'tool', callId: 'call' as never },
+      content: [
+        { type: 'text', text: '第一段' },
+        { type: 'text', text: '第二段' },
+      ],
+      source: { kind: 'user' },
     })
-    expect(collectImages(message.content).map(block => block.attachment.attachmentId)).toEqual(['nested'])
-    expect(plainText(message)).toContain('a.png')
+    expect(collectImages(message.content)).toEqual([])
+    expect(plainText(message)).toBe('第一段\n第二段')
   })
 })
 
@@ -101,22 +88,16 @@ describe('stripImages', () => {
     expect(stripped[1]).toEqual({ type: 'text', text: '描述' })
   })
 
-  it('递归移除工具结果内图片,保留文本信封并追加描述', () => {
-    const stripped = stripImages([{
-      type: 'tool-result',
-      toolCallId: 'call' as never,
-      content: [
-        { type: 'text', text: '<path>a.png</path>' },
-        { type: 'image', attachment: REF('inner') },
-      ],
-    }], '描述')
-    expect(stripped).toHaveLength(2)
-    const result = stripped[0]
-    expect(result.type).toBe('tool-result')
-    if (result.type !== 'tool-result') return
-    expect(result.content).toHaveLength(1)
-    expect(result.content[0]).toEqual({ type: 'text', text: '<path>a.png</path>' })
-    expect(stripped[1]).toEqual({ type: 'text', text: '描述' })
+  it('多张图片全部移除,描述追加在末尾', () => {
+    const stripped = stripImages([
+      { type: 'image', attachment: REF('a') },
+      { type: 'text', text: '中间文字' },
+      { type: 'image', attachment: REF('b') },
+    ], '描述')
+    expect(stripped).toEqual([
+      { type: 'text', text: '中间文字' },
+      { type: 'text', text: '描述' },
+    ])
   })
 
   it('无图内容原样返回', () => {
@@ -183,8 +164,7 @@ describe('describeImages', () => {
     expect(text).toContain('[截图识别 ')
     expect(text).toContain('图1:这是一张截图')
     expect(description.source).toEqual({
-      kind: 'plugin',
-      plugin: 'auto-vision',
+      kind: 'auto-vision',
       form: 'notice',
       summary: '识别了 2 张图片',
     })
@@ -206,24 +186,13 @@ describe('describeImages', () => {
     expect(options.messages[0].content.filter((block: { type: string }) => block.type === 'image')).toHaveLength(2)
   })
 
-  it('工具结果内嵌图片也被识图', async () => {
-    const toolMessage = createUserMessage({
-      content: [{
-        type: 'tool-result',
-        toolCallId: 'call' as never,
-        content: [
-          { type: 'text', text: '<path>shot.png</path>' },
-          { type: 'image', attachment: REF('nested') },
-        ],
-      }],
-      source: { kind: 'tool', callId: 'call' as never },
-    })
-    const description = await describeImages(ctx(), { provider: 'p', model: 'm' }, toolMessage)
+  it('描述消息是 auto-vision 的 notice 折叠行', async () => {
+    const description = await describeImages(ctx(), { provider: 'p', model: 'm' }, imageMessage('a'))
     const text = description.content.filter(block => block.type === 'text').map(block => block.text).join('')
     expect(text).toContain('图1:这是一张截图')
+    // DSH 0.1.7 起每个生产者声明自己的 source kind,不再有通用 plugin kind。
     expect(description.source).toEqual({
-      kind: 'plugin',
-      plugin: 'auto-vision',
+      kind: 'auto-vision',
       form: 'notice',
       summary: '识别了 1 张图片',
     })
@@ -241,8 +210,7 @@ describe('describeImages', () => {
     const text = description.content.filter(block => block.type === 'text').map(block => block.text).join('')
     expect(text).toContain('[识图失败:gateway 500]')
     expect(description.source).toEqual({
-      kind: 'plugin',
-      plugin: 'auto-vision',
+      kind: 'auto-vision',
       form: 'notice',
       summary: '图片识别失败',
     })
@@ -287,24 +255,11 @@ describe('replaceRequestImages', () => {
     expect(replaced.content).toEqual([])
   })
 
-  it('工具结果内嵌图片同样移除', () => {
-    const toolMessage = createUserMessage({
-      content: [{
-        type: 'tool-result',
-        toolCallId: 'call' as never,
-        content: [
-          { type: 'text', text: '<path>shot.png</path>' },
-          { type: 'image', attachment: REF('nested') },
-        ],
-      }],
-      source: { kind: 'tool', callId: 'call' as never },
+  it('无图消息原样返回(同一对象,不做无谓复制)', () => {
+    const textOnly = createUserMessage({
+      content: [{ type: 'text', text: '只有文字' }],
+      source: { kind: 'user' },
     })
-    const replaced = replaceRequestImages(toolMessage)
-    expect(hasImage(replaced)).toBe(false)
-    const result = replaced.content[0]
-    expect(result.type).toBe('tool-result')
-    if (result.type !== 'tool-result') return
-    expect(result.content.some(block => block.type === 'text' && block.text.includes('shot.png'))).toBe(true)
-    expect(result.content.some(block => block.type === 'image')).toBe(false)
+    expect(replaceRequestImages(textOnly)).toBe(textOnly)
   })
 })

@@ -22,6 +22,6 @@ export default defineConfig({
     '@deepseek-ai/dsh-agent',
     '@deepseek-ai/dsh-llm',
     '@deepseek-ai/dsh-settings',
-    'schemastery',
+    '@deepseek-ai/schemastery',
   ],
 })

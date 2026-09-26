@@ -16,14 +16,15 @@
  * @module dsh-auto-vision
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-llm'
 // 事件类型:'system-prompt/assemble' waterfall 与 PromptAssembly。
 import type {} from '@deepseek-ai/dsh-system-prompt'
-// 类型面:settings 服务的 Context 声明(settings 段注册在 inject 内完成)。
+// 类型面:ctx.settings(SettingsForms)的 Context 声明。
 import type {} from '@deepseek-ai/dsh-settings'
-import z from 'schemastery'
+// 官方 DSH 生态的 schemastery 发行版(宿主经 dsh-settings 提供,见 peerDependencies)。
+import z from '@deepseek-ai/schemastery'
 import { declareImageInputs } from './declare.ts'
 import { describeImages, hasImage, PLUGIN_NAME, replaceRequestImages } from './vision.ts'
 
@@ -54,40 +55,50 @@ export const DEFAULT_NATIVE_VISION: NativeVisionModel[] = [
   { provider: 'deepseek', model: 'deepseek-v4-flash-vision-exp' },
 ]
 
-/** 插件配置;所有字段都可省。 */
+/**
+ * 插件配置。
+ *
+ * 每个字段都是 cordis 的 volatile 引用:DSH 0.1.7 起,设置表单的改动会就
+ * 地提交进这些引用(不重挂插件,见 cordis-plugin-loader 的 volatile 配置
+ * 语义),所以插件始终持有同一份引用、用 `.get()` 读取最新值——"改完即时
+ * 生效"正是靠这个形状,不再需要旧版的 setSource 回调。
+ */
 export interface Config {
   /** 识图路由的 provider。 */
-  visionProvider?: string
+  visionProvider: Volatile<string>
   /** 识图路由的模型。 */
-  visionModel?: string
+  visionModel: Volatile<string>
   /**
    * 原生支持图片输入的模型白名单:白名单内的模型带图时不干预,
    * 白名单外的模型带图时替换为识别文本。默认两个 vision-exp。
    */
-  nativeVision?: NativeVisionModel[]
+  nativeVision: Volatile<NativeVisionModel[]>
   /**
-   * 自动配置:启动时(及 settings/适配器变化时)自动给 settings 里已配置
-   * 的模型补 `image` 输入声明,让 GUI 放行带图消息、免去手动配置。
+   * 自动配置:启动时(及适配器变化时)自动给已配置的模型补 `image`
+   * 输入声明,让 GUI 放行带图消息、免去手动配置。
    * 默认 true;设为 false 关闭(此时需按 README 手动声明)。
    */
-  autoDeclareInput?: boolean
+  autoDeclareInput: Volatile<boolean>
   /**
    * 识图调用使用的思考强度,默认 `high`。只作用于识图这一次调用,
    * 不影响用户会话模型的思考强度。
    */
-  visionReasoningEffort?: string
+  visionReasoningEffort: Volatile<string>
 }
 
-/** Schemastery 校验(同时是 settings 段的 schema)。 */
-export const Config: z<Config> = z.object({
-  visionProvider: z.string().default(DEFAULT_VISION_PROVIDER),
-  visionModel: z.string().default(DEFAULT_VISION_MODEL),
+/**
+ * 配置 schema:同时是设置页表单的来源。字段标 `.volatile()` 表示它们可以
+ * 在运行中改动而不重挂插件。
+ */
+export const Config = z.object({
+  visionProvider: z.string().default(DEFAULT_VISION_PROVIDER).volatile(),
+  visionModel: z.string().default(DEFAULT_VISION_MODEL).volatile(),
   nativeVision: z.array(z.object({
     provider: z.string(),
     model: z.string(),
-  })).default(DEFAULT_NATIVE_VISION),
-  autoDeclareInput: z.boolean().default(true),
-  visionReasoningEffort: z.string().default(DEFAULT_VISION_REASONING_EFFORT),
+  })).default(DEFAULT_NATIVE_VISION).volatile(),
+  autoDeclareInput: z.boolean().default(true).volatile(),
+  visionReasoningEffort: z.string().default(DEFAULT_VISION_REASONING_EFFORT).volatile(),
 })
 
 /**
@@ -99,23 +110,13 @@ export const Config: z<Config> = z.object({
  * @param config - 组合入口配置;settings.yaml 的 auto-vision 段会覆盖它。
  */
 export function apply(ctx: Context, config: Config): void {
-  let current: () => Config = () => config
-  // settings 是可选服务:web/CLI 组合里由 settings-file 提供。服务缺失时
-  // 插件照常工作,只是配置段不会回写 settings.yaml(全部走组合入口默认值)。
-  // installSection = 注册命名空间 schema + 以组合入口为 base 层 + setSource/watch。
-  ctx.inject(['settings'], (settingsCtx) => {
-    settingsCtx.settings.installSection(settingsCtx, AUTO_VISION_NAMESPACE, Config, config, {
-      setSource: source => {
-        current = source
-      },
-      onChange: () => {
-        // 识图路由与白名单按次读取 current(),无需额外刷新。
-      },
-    })
-  })
+  // 配置以 volatile 引用传入:设置表单的改动就地提交进这些引用、不重挂
+  // 插件,所以下面一律用 .get() 读取,每次判断都拿到最新值。DSH 0.1.7 的
+  // settings 服务(SettingsForms)按 Loader entry 读取/编辑配置,插件不再
+  // 自己注册命名空间——schema 由 Config 导出经组合入口提供。
 
   /** 原生视觉白名单(每次判断时读取最新配置)。 */
-  const nativeVision = (): NativeVisionModel[] => (current() ?? {}).nativeVision ?? DEFAULT_NATIVE_VISION
+  const nativeVision = (): readonly NativeVisionModel[] => config.nativeVision.get() ?? DEFAULT_NATIVE_VISION
 
   /** 白名单里的模型名集合(用于跨分组按名匹配)。 */
   const nativeModelNames = (): Set<string> => new Set(nativeVision().map(entry => entry.model))
@@ -160,7 +161,7 @@ export function apply(ctx: Context, config: Config): void {
    * 3. 否则回退配置的默认识图路由。
    */
   const resolveVisionRoute = async (provider: string | undefined): Promise<{ provider: string; model: string; reasoningEffort: string }> => {
-    const reasoningEffort = (current() ?? {}).visionReasoningEffort ?? DEFAULT_VISION_REASONING_EFFORT
+    const reasoningEffort = config.visionReasoningEffort.get() ?? DEFAULT_VISION_REASONING_EFFORT
     if (provider !== undefined) {
       const native = nativeVision()
       // 1. 精确:同 provider 的白名单条目。
@@ -172,10 +173,9 @@ export function apply(ctx: Context, config: Config): void {
       const byName = ids.find(id => names.has(id))
       if (byName !== undefined) return { provider, model: byName, reasoningEffort }
     }
-    const cfg = current() ?? {}
     return {
-      provider: cfg.visionProvider ?? DEFAULT_VISION_PROVIDER,
-      model: cfg.visionModel ?? DEFAULT_VISION_MODEL,
+      provider: config.visionProvider.get() ?? DEFAULT_VISION_PROVIDER,
+      model: config.visionModel.get() ?? DEFAULT_VISION_MODEL,
       reasoningEffort,
     }
   }
@@ -264,8 +264,7 @@ export function apply(ctx: Context, config: Config): void {
       syncTimer = undefined
       const settings = ctx.get('settings')
       if (settings === undefined) return
-      const cfg = current() ?? {}
-      if (cfg.autoDeclareInput === false) return
+      if (config.autoDeclareInput.get() === false) return
       void declareImageInputs(settings).catch((error: unknown) => {
         ctx.logger.warn(`auto-vision: failed to auto-declare image input: ${String(error)}`)
       })
@@ -274,10 +273,6 @@ export function apply(ctx: Context, config: Config): void {
   scheduleDeclarations()
   ctx.on('llm/adapters-updated', () => {
     // 适配器变化后模型目录可能已变,清空缓存并重新补声明。
-    modelCatalogCache.clear()
-    scheduleDeclarations()
-  })
-  ctx.on('settings/updated', () => {
     modelCatalogCache.clear()
     scheduleDeclarations()
   })

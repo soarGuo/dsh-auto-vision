@@ -36,7 +36,7 @@ dsh plugin --profile web add github:soarGuo/dsh-auto-vision
 dsh plugin --profile web add dsh-auto-image
 
 # 或 tarball 安装(在仓库目录里先 pnpm pack)
-dsh plugin --profile web add ./dsh-auto-image-0.1.3.tgz
+dsh plugin --profile web add ./dsh-auto-image-0.2.0.tgz
 ```
 
 安装后重启 DSH。
@@ -132,7 +132,7 @@ llm-pi-ai:
 ## 卸载
 
 ```sh
-dsh plugin --profile web remove dsh-auto-vision
+dsh plugin --profile web remove dsh-auto-image
 ```
 
 重启 DSH。

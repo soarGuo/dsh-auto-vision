@@ -50,8 +50,8 @@ dsh plugin --profile web add dsh-auto-image
 From a tarball:
 
 ```sh
-pnpm pack          # produces dsh-auto-image-0.1.3.tgz (inside the repo)
-dsh plugin --profile web add ./dsh-auto-image-0.1.3.tgz
+pnpm pack          # produces dsh-auto-image-0.2.0.tgz (inside the repo)
+dsh plugin --profile web add ./dsh-auto-image-0.2.0.tgz
 ```
 
 Then restart DSH.

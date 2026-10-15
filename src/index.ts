@@ -76,9 +76,25 @@ export interface Config {
   /**
    * 自动配置:启动时(及适配器变化时)自动给已配置的模型补 `image`
    * 输入声明,让 GUI 放行带图消息、免去手动配置。
-   * 默认 true;设为 false 关闭(此时需按 README 手动声明)。
+   *
+   * 默认 false:补出来的声明是一句"谎话"——模型目录里会显示该模型支持
+   * 图片输入,而它其实未必支持。声明本身只服务 GUI 准入,本插件的放行
+   * 判断另走 `passThroughDeclaredVision`(运行时声明)与 `nativeVision`
+   * (静态白名单),所以默认不需要污染模型目录。只有当某个模型确实支持
+   * 图片、但其目录条目没声明时,才把它设为 true 来强制放行。
    */
   autoDeclareInput: Volatile<boolean>
+  /**
+   * 按运行时声明放行:模型目录(inputModalities / input)里声明了
+   * `image` 的模型带图时不干预,图片原样交给模型——无论它在不在
+   * `nativeVision` 白名单里。
+   *
+   * 默认 true。静态白名单只认已知的视觉模型;当上游把某个文本模型升级出
+   * 真实识图能力时,白名单不会跟着变,于是截图会被白白降级成文字描述、
+   * 还多花一次识图调用。开启本项后以目录声明为准,白名单退化为
+   * 「目录没声明、但我确定它能看图」的兜底。设为 false 即回到纯白名单。
+   */
+  passThroughDeclaredVision: Volatile<boolean>
   /**
    * 识图调用使用的思考强度,默认 `high`。只作用于识图这一次调用,
    * 不影响用户会话模型的思考强度。
@@ -97,7 +113,8 @@ export const Config = z.object({
     provider: z.string(),
     model: z.string(),
   })).default(DEFAULT_NATIVE_VISION).volatile(),
-  autoDeclareInput: z.boolean().default(true).volatile(),
+  autoDeclareInput: z.boolean().default(false).volatile(),
+  passThroughDeclaredVision: z.boolean().default(true).volatile(),
   visionReasoningEffort: z.string().default(DEFAULT_VISION_REASONING_EFFORT).volatile(),
 })
 
@@ -153,6 +170,44 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
+  /** 模型输入能力缓存:按 provider/model,适配器变化时清空。 */
+  const modelInfoCache = new Map<string, boolean>()
+
+  /**
+   * 解析某个 (provider, model) 在模型目录里是否声明了 `image` 输入。
+   *
+   * 这是「模型真实能力」而非白名单:目录没声明、或适配器查不到时一律
+   * 按不支持处理(保守——宁可多走一次识图,也不把图片发给看不见它的模型)。
+   * provider 也纳入判定,避免不同分组下的同名模型互相误判。
+   */
+  const isDeclaredImageCapable = async (provider?: string, model?: string): Promise<boolean> => {
+    if (provider === undefined || model === undefined) return false
+    const key = `${provider}/${model}`
+    const cached = modelInfoCache.get(key)
+    if (cached !== undefined) return cached
+    try {
+      const info = await ctx.llm.resolveModelInfo(provider, model)
+      const capable = info.inputModalities?.includes('image') === true
+      modelInfoCache.set(key, capable)
+      return capable
+    } catch {
+      // 解析失败不缓存:适配器可能只是暂时不可用。
+      return false
+    }
+  }
+
+  /**
+   * 当前模型是否能自己看图:静态白名单优先(用户显式声明「我确定它能看图」,
+   * 不受目录声明缺失影响),否则按模型目录的输入声明判断。
+   *
+   * 判定为真时本插件完全放手:不追加识别描述,请求里的图片也不剥离。
+   */
+  const isImageCapable = async (provider?: string, model?: string): Promise<boolean> => {
+    if (matchesNativeVision(provider, model)) return true
+    if (config.passThroughDeclaredVision.get() === false) return false
+    return await isDeclaredImageCapable(provider, model)
+  }
+
   /**
    * 解析识图路由:跟随当前会话模型的分组。
    * 1. 白名单精确命中当前 provider → 用它;
@@ -205,12 +260,6 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
-  /** 当前模型是否原生支持图片:assemble 快照优先,agent 创建选项兜底。 */
-  const isNativeVision = (agent: Agent): boolean => {
-    const { provider, model } = currentModel(agent)
-    return matchesNativeVision(provider, model)
-  }
-
   ctx.on('agent/pre-step', async (
     { agent, signal },
     next,
@@ -218,8 +267,10 @@ export function apply(ctx: Context, config: Config): void {
     const decision = await next()
     if (decision.kind === 'reject' || signal.aborted) return decision
     if (!decision.messages.some(message => hasImage(message))) return decision
-    // 原生视觉模型(如 vision-exp)不干预,图片原样交给模型。
-    if (isNativeVision(agent)) return decision
+    // 能自己看图的模型不干预,图片原样交给模型:静态白名单,或目录里
+    // 声明了 image 输入(如上游真的支持识图的 deepseek-v4-pro)。
+    const { provider, model } = currentModel(agent)
+    if (await isImageCapable(provider, model)) return decision
     // 识图路由跟随当前分组:用当前 provider 分组里的视觉模型识图。
     const route = await resolveVisionRoute(currentModel(agent).provider)
     // 原消息保持原样(图片块保留,GUI 显示缩略图);
@@ -240,8 +291,9 @@ export function apply(ctx: Context, config: Config): void {
     const provider = options.provider
     const model = options.model
     if (provider === undefined || model === undefined) return yield* next()
-    // 原生视觉模型(白名单,含跨分组按名匹配)正常发图,不干预。
-    if (matchesNativeVision(provider, model)) {
+    // 能自己看图的模型正常发图,不剥离;判定与 pre-step 完全一致,
+    // 两处必须同源,否则会出现"描述了图但请求里也有图"的重复。
+    if (await isImageCapable(provider, model)) {
       return yield* next()
     }
     if (!options.messages.some(message => hasImage(message))) return yield* next()
@@ -274,6 +326,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.on('llm/adapters-updated', () => {
     // 适配器变化后模型目录可能已变,清空缓存并重新补声明。
     modelCatalogCache.clear()
+    modelInfoCache.clear()
     scheduleDeclarations()
   })
 

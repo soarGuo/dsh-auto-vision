@@ -2,6 +2,32 @@
 
 All notable changes to dsh-auto-image (the `dsh-auto-vision` plugin).
 
+## 0.2.0 — 2026-10-15
+
+**默认行为变更:模型能自己看图时不再转述。**
+
+上游把某个文本模型升级出真实识图能力后,静态白名单不会跟着变,于是截图仍
+会被降级成文字描述、还多花一次识图调用。现在放行判断改为「运行时声明优先」,
+白名单退化为兜底。
+
+**新增**
+
+- `passThroughDeclaredVision`(默认 `true`):模型目录(`inputModalities` /
+  `input`)里声明了 `image` 的模型带图时不干预,图片原样交给模型。判定结果按
+  `provider/model` 缓存,`llm/adapters-updated` 时清空。
+- `agent/pre-step` 与 `llm/stream` 共用同一个放行判定,避免出现「描述了图、
+  请求里又带图」或「两边都不处理」的错配。
+
+**变更**
+
+- `autoDeclareInput` 默认值由 `true` 改为 `false`。它补出来的声明只服务 GUI
+  准入,却会让模型目录谎称每个模型都支持图片输入;放行判断既然不再依赖它,
+  默认就不必污染目录。确有模型支持图片、但目录未声明时再显式开启。
+
+**文档**
+
+- 模块头注释补充放行判定的两级来源说明。
+
 ## 0.1.4 — 2026-09-26
 
 Migrate to the DeepSeek Harness 0.1.7 release window and satisfy the DSH

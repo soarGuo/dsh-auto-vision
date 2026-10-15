@@ -247,6 +247,45 @@ describe('auto-vision agent/pre-step(白名单机制)', () => {
     // 识图请求本身就是一条普通用户消息(不是要写进会话历史的记录)。
     expect(options.messages[0].source).toEqual({ kind: 'user' })
   })
+  it('模型目录声明 image(v4-pro 现状):放行原图,不追加描述', async () => {
+    const { llm, fire, assemble } = await mount()
+    // 上游真的支持识图 → 目录声明 image;白名单里没有它。
+    llm.resolveModelInfo.mockImplementation(async (_p: string, model: string) => ({
+      provider: 'deepseek',
+      id: model,
+      name: model,
+      inputModalities: ['text', 'image'],
+    }))
+    await assemble('deepseek', 'deepseek-v4-pro')
+    const decision = await fire(imageProposal())
+    if (decision.kind !== 'enter') throw new Error('expected enter')
+    // 只有原消息:图片原样交给模型,没有识别描述、也没有识图调用。
+    expect(decision.messages).toHaveLength(1)
+    expect(decision.messages[0].content.some(block => block.type === 'image')).toBe(true)
+    expect(llm.stream).not.toHaveBeenCalled()
+  })
+
+  it('passThroughDeclaredVision: false:回到纯白名单,即使声明了 image 也转述', async () => {
+    const { llm, fire, assemble } = await mount({
+      pluginConfig: { passThroughDeclaredVision: false },
+    })
+    llm.resolveModelInfo.mockImplementation(async (_p: string, model: string) => ({
+      provider: 'deepseek',
+      id: model,
+      name: model,
+      inputModalities: ['text', 'image'],
+    }))
+    await assemble('deepseek', 'deepseek-v4-pro')
+    const decision = await fire(imageProposal())
+    if (decision.kind !== 'enter') throw new Error('expected enter')
+    expect(decision.messages).toHaveLength(2)
+    const text = decision.messages[1].content
+      .filter(block => block.type === 'text')
+      .map(block => (block as { text: string }).text)
+      .join('\n')
+    expect(text).toContain('[截图识别 ')
+    expect(llm.stream).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('auto-vision llm/stream(请求前剥离图片)', () => {
@@ -304,5 +343,42 @@ describe('auto-vision llm/stream(请求前剥离图片)', () => {
     const chunks = await streamThrough(fixture.ctx, options)
     expect(chunks).toHaveLength(1)
     expect(JSON.stringify(chunks[0])).toBe(JSON.stringify(MARKER))
+  })
+
+  it('模型目录声明 image:带图请求原样发出,不剥离', async () => {
+    const fixture = await mount()
+    fixture.llm.resolveModelInfo.mockImplementation(async (_p: string, model: string) => ({
+      provider: 'deepseek',
+      id: model,
+      name: model,
+      inputModalities: ['text', 'image'],
+    }))
+    const options: GenerateOptions = {
+      provider: 'deepseek',
+      model: 'deepseek-v4-pro',
+      messages: [imageProposal()],
+    }
+    const chunks = await streamThrough(fixture.ctx, options)
+    // 走默认流(MARKER 原样出现),且没有短路重发。
+    expect(JSON.stringify(chunks[0])).toBe(JSON.stringify(MARKER))
+    expect(fixture.llm.stream).not.toHaveBeenCalled()
+  })
+
+  it('passThroughDeclaredVision: false:声明了 image 也照样剥离', async () => {
+    const fixture = await mount({ pluginConfig: { passThroughDeclaredVision: false } })
+    fixture.llm.resolveModelInfo.mockImplementation(async (_p: string, model: string) => ({
+      provider: 'deepseek',
+      id: model,
+      name: model,
+      inputModalities: ['text', 'image'],
+    }))
+    const options: GenerateOptions = {
+      provider: 'deepseek',
+      model: 'deepseek-v4-pro',
+      messages: [imageProposal()],
+    }
+    await streamThrough(fixture.ctx, options)
+    const streamed = fixture.llm.stream.mock.calls.at(-1)?.[0]
+    expect(streamed.messages[0].content.some((b: { type: string }) => b.type === 'image')).toBe(false)
   })
 })

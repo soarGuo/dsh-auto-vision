@@ -8,7 +8,7 @@
 
 - **Your message stays untouched — images stay visible.** Pasting an image into a non-vision model (e.g. `deepseek-v4-pro`, `deepseek-v4-flash`) keeps your message exactly as sent, thumbnail included (just like a vision-exp session); the vision description becomes a separate, collapsed context entry (`auto-vision · recognized N image(s)`), expandable like a thinking row.
 - **Durable memory.** Descriptions are appended to the session log, so later turns can reference the same image memory. Every new screenshot adds a fresh timestamped description; the model naturally favors the latest one.
-- **Per-model, not per-session.** Models on the `nativeVision` allowlist (e.g. vision models) are never touched — they see the images themselves.
+- **Per-model, not per-session.** A model that can see images itself — one on the `nativeVision` allowlist, or one whose catalog entry declares `image` input — is never touched; it receives the images as sent.
 - **Request-level stripping.** Before each model request (`llm/stream`), image blocks are swapped for short placeholders (full content lives in the description message, so nothing is double-billed), meaning images never reach the gateway; the GUI display is unaffected.
 - **Recursive coverage.** Images nested inside tool results (e.g. `read_image`) are bridged too, so a model that "successfully" reads an image never sends raw bytes to a gateway that would reject them.
 - **Failure-safe.** Recognition failures degrade to a `[recognition failed: …]` note in the context row; your text still reaches the model. Cancellation aborts cleanly.
@@ -17,7 +17,8 @@
 
 1. **Admission (settings)**: the GUI rejects images for models that do not declare `image` input. Declare `input: [text, image]` on the bridged models in `settings.yaml` — the admission check trusts the model declaration and lets the message in.
 2. **Accurate model snapshot (plugin)**: the plugin listens to `system-prompt/assemble` (fires right before `agent/pre-step`, same step) and reads the provider/model the GUI just selected from `assembly.variables`.
-3. **Split injection (plugin)**: at `agent/pre-step`, messages whose model is not on the `nativeVision` allowlist are kept exactly as sent (images included), and a separate notice-form context message carrying the vision description is appended after them. The agent loop appends both messages to the session log.
+3. **Gate (plugin)**: at `agent/pre-step` the plugin first decides whether the current model can see images itself — either it is on the `nativeVision` allowlist, or its catalog entry declares `image` input (`passThroughDeclaredVision`, on by default). If it can, the plugin stays out of the way entirely and the images go to the model untouched. The verdict is cached per `provider/model` and cleared when adapters change.
+4. **Split injection (plugin)**: for a model that cannot, the message is kept exactly as sent (images included), and a separate notice-form context message carrying the vision description is appended after it. The agent loop appends both messages to the session log. This step and the gate share one verdict, so they cannot disagree.
 4. **Request-level stripping (plugin)**: at `llm/stream`, image blocks in requests for non-allowlist models are swapped for short placeholder text, so the gateway never receives image bytes while the GUI keeps showing the thumbnails.
 5. **Group-following recognition route**: the recognition route follows the session model's provider group — images sent in one provider group are described by that group's own vision model (same credentials); groups without a native vision entry fall back to `visionProvider`/`visionModel`.
 
@@ -57,7 +58,7 @@ Then restart DSH.
 
 ## Configuration
 
-**Zero manual setup for model declarations.** By default (`autoDeclareInput: true`) the plugin scans the `llm-pi-ai` and `llm-deepseek` settings sections on startup (and whenever settings/adapters change) and automatically adds `image` input declarations to every configured model — the step the GUI admission check needs to let images through. Native vision models get the declaration too (they need it to receive images at all). Idempotent; already-declared models are untouched.
+**Zero manual setup for model declarations.** As long as a model's own catalog entry declares `image` input (native vision models normally do), the plugin needs no configuration at all: admission lets the image through and the plugin stays out of the way. Only when a model **does** see images but its catalog entry does not say so do you need `autoDeclareInput: true` — the plugin then scans the `llm-pi-ai` and `llm-deepseek` sections on startup (and whenever adapters change) and adds the missing declarations. Idempotent.
 
 The plugin's own section (all fields optional; these are the defaults):
 
@@ -70,10 +71,11 @@ auto-vision:
       { provider: deepseek-official, model: deepseek-v4-flash-vision-exp },
       { provider: deepseek, model: deepseek-v4-flash-vision-exp }
     ]
-  autoDeclareInput: true                         # auto-add image declarations (set false to manage manually)
+  passThroughDeclaredVision: true                # models declaring image input get the images untouched (false = allowlist only)
+  autoDeclareInput: false                        # add image declarations to undeclared models (pollutes the catalog; opt in)
 ```
 
-Set `autoDeclareInput: false` if you prefer to declare `input: [text, image]` yourself (then follow the manual steps below). Settings hot-reload — no restart needed for config changes.
+Set `autoDeclareInput: true` only if a model really does see images but its catalog entry does not declare it (otherwise follow the manual steps below). Settings hot-reload — no restart needed for config changes.
 
 ### Manual declaration (only when autoDeclareInput is false)
 

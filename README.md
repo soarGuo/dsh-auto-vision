@@ -2,21 +2,23 @@
 
 中文 | [English](./README.en.md)
 
-**让不支持图片输入的模型(如 `deepseek-v4-pro`、`deepseek-v4-flash`)也能接收截图。** 粘贴的图片由配置的视觉模型自动识别,描述以**折叠的上下文条目**写入会话历史——**你的原始消息保持原样**。每个会话都生效;与模型相关,与会话无关。**纯插件 + 配置实现,不修改 DSH 源码。**
+**让不支持图片输入的模型(如 `deepseek-v4-pro`、`deepseek-v4-flash`)也能接收截图。** 粘贴的图片由配置的视觉模型自动识别,描述以**折叠的上下文条目**写入会话历史——**你的原始消息保持原样**。模型自己能看图时(目录里声明了 `image` 输入)**插件完全不干预,图片原样交给模型**。每个会话都生效;与模型相关,与会话无关。**纯插件 + 配置实现,不修改 DSH 源码。**
 
 ## 工作原理
 
-1. **GUI 放行**(自动配置):插件默认(`autoDeclareInput: true`)在启动时与 settings/适配器变化时,自动给 settings 里已配置的模型补 `input: [text, image]` 声明——图片准入检查只相信模型声明,声明含 image 即放行,带图消息得以进入 inbox。原生视觉模型同样补声明(它们也需要声明才能收到图)。
+1. **GUI 放行**:图片准入检查发生在插件之前,且只相信模型声明。要么该模型在目录里已声明 `image` 输入,要么开启 `autoDeclareInput: true` 让插件在启动时与适配器变化时替已配置模型补上声明(原生视觉模型同样需要声明才能收到图)。
 2. **准确模型快照**(插件):监听 `system-prompt/assemble`(pre-step 前、同一步发生),从 `assembly.variables` 读取 GUI 此刻选择的准确 provider/model(由 DSH 的 model-selection 机制写入)。
-3. **拆分注入**(插件):`agent/pre-step` 时,白名单外的模型 → **原消息完全保留(图片照常显示,和 vision-exp 会话一样)**,识别描述作为**独立的 notice 上下文消息**追加其后(GUI 渲染为折叠行:摘要 + 展开看全文)。两条消息都由 agent loop 原样写入会话历史,**识别结果天然持久化**,后续多轮都能引用同一条图片记忆。
-4. **请求级剥离**(插件):发给模型的请求在 `llm/stream` 阶段把图片块替换为短占位文本(完整内容在描述消息里,不重复消耗 token),所以图片永远不会到达网关;GUI 显示不受影响。
-5. **识图跟随分组**:识图路由自动跟随当前会话模型的分组——在 sub2api 分组里发图,就用 sub2api 分组里的视觉模型识图(走该分组的 key);切到官方分组,就用官方视觉模型(走官方 key)。分组在白名单里没有视觉模型时,回退到 `visionProvider`/`visionModel` 默认路由。
+3. **放行判定**(插件):`agent/pre-step` 时先判定当前模型能否自己看图——命中 `nativeVision` 白名单,或目录条目声明了 `image` 输入(`passThroughDeclaredVision`,默认开)——能看图就**完全不干预,图片原样交给模型**。判定结果按 `provider/model` 缓存,适配器变化时清空。
+4. **拆分注入**(插件):判定为不能看图的模型 → **原消息完全保留(图片照常显示,和 vision-exp 会话一样)**,识别描述作为**独立的 notice 上下文消息**追加其后(GUI 渲染为折叠行:摘要 + 展开看全文)。两条消息都由 agent loop 原样写入会话历史,**识别结果天然持久化**,后续多轮都能引用同一条图片记忆。`agent/pre-step` 与下一步共用同一个判定,两者不会打架。
+5. **请求级剥离**(插件):发给模型的请求在 `llm/stream` 阶段把图片块替换为短占位文本(完整内容在描述消息里,不重复消耗 token),所以图片永远不会到达网关;GUI 显示不受影响。
+6. **识图跟随分组**:识图路由自动跟随当前会话模型的分组——在 sub2api 分组里发图,就用 sub2api 分组里的视觉模型识图(走该分组的 key);切到官方分组,就用官方视觉模型(走官方 key)。分组在白名单里没有视觉模型时,回退到 `visionProvider`/`visionModel` 默认路由。
 
 ## 行为
 
-- 触发条件(两个同时满足):
+- 触发条件(三个同时满足):
   1. 进入 step 的消息含有图片块(顶层或工具结果内);
-  2. 当前模型不在 `nativeVision` 白名单内。
+  2. 当前模型不在 `nativeVision` 白名单内;
+  3. 当前模型的目录条目没有声明 `image` 输入(或 `passThroughDeclaredVision: false`)。
 - **图片照常显示**:你的消息气泡里图片缩略图保留(和 vision-exp 会话一样),只是发给模型的请求把图片换成了短占位;完整识别内容在紧随其后的折叠上下文条目里。
 - **递归处理工具结果**:`read_image` 等工具结果里内嵌的图片同样会被识图替换(声明 `input: [text, image]` 会解锁 `read_image` 的执行门槛,这一层替换保证模型主动读的图也不会直达网关)。
 - **每次发图都会识别,每次识别结果都会追加**(不覆盖)。新截图的结果带时间戳追加在历史最后,模型以最新一条为主;旧结果仍在上下文中可引用。
@@ -41,7 +43,7 @@ dsh plugin --profile web add ./dsh-auto-image-0.1.3.tgz
 
 ## 配置
 
-**模型声明零手动配置。** 默认(`autoDeclareInput: true`)插件会自动扫描 `llm-pi-ai` / `llm-deepseek` 段,给所有已配置模型补 `image` 输入声明(幂等,已声明的不动),这是 GUI 准入放行所需的那一步。安装者无需手动改任何东西。
+**模型声明零手动配置。** 只要模型自己的目录条目声明了 `image` 输入(原生视觉模型通常都声明了),插件就无需任何配置:准入放行,且带图时插件完全不干预。只有当某个模型**确实支持图片、但目录条目没声明**时,才需要开启 `autoDeclareInput: true` 让插件替它补声明(它会扫描 `llm-pi-ai` / `llm-deepseek` 段,幂等写入)。
 
 插件自身配置(均可省略,以下为默认值):
 
@@ -54,7 +56,8 @@ auto-vision:
       { provider: deepseek-official, model: deepseek-v4-flash-vision-exp },
       { provider: deepseek, model: deepseek-v4-flash-vision-exp }
     ]
-  autoDeclareInput: true                       # 自动补 image 声明;false 则手动管理
+  passThroughDeclaredVision: true              # 目录声明了 image 的模型直接放行原图;false 则只认白名单
+  autoDeclareInput: false                      # 给未声明的模型补 image 声明(会污染模型目录,按需开启)
 ```
 
 settings.yaml 修改即时生效(热重载)。识图路由也可指向任一网关的视觉模型:
